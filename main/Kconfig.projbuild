@@ -1,4 +1,4 @@
-menu "Project Configuration"
+menu "Some Example Configuration Options for Credentials ond other Stuff"
 
     config ESP_WIFI_SSID
         string "WiFi SSID"

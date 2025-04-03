@@ -1,20 +1,32 @@
 #include <stdio.h>
-#include "uwifi.h"
-#include "uhttpServer.h"
-#include "mLED.h"
+#include <unistd.h> // needed for sleep
+#include "mRN2483.h"
 
-static const char *TAG = "main";
-
+#define TAG "Main"
 
 void app_main(void)
 {
-    GPIO_configure_led();
-    EventGroupHandle_t s_wifi_event_group = wifi_init_sta();
-    http_start_server();
-    GPIO_attach_ToggleHandler();
+    rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_18, 1024);
 
-    xEventGroupWaitBits(s_wifi_event_group,WIFI_FAIL_BIT,pdFALSE,pdFALSE,portMAX_DELAY);
-    
-    ESP_LOGI(TAG, "Wifi Fail, Dying...");
-    esp_restart();
+    if (rn_init_otaa() != ESP_OK)
+    {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Sending TX");
+    unsigned int port;
+    char rx_data[10];
+
+    while (1)
+    {
+        if (rn_tx("Sunny Day!", 1, true, rx_data, 10, &port) == ESP_OK && port > 0)
+        {
+            ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
+            ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
+        }
+        ESP_LOGI(TAG, "VDD: %s", rn_send_raw_cmd("sys get vdd"));
+        ESP_LOGI(TAG, "VER: %s", rn_send_raw_cmd("sys get ver"));
+        sleep(60);
+    }
+
 }
