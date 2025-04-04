@@ -1,4 +1,8 @@
 #include "uI2C.h"
+#include "esp_log.h"
+#include "driver/i2c_master.h"
+
+static const char *TAG = "I2C Master";
 
 
 i2c_master_bus_handle_t i2c_master_bus_handle = NULL;

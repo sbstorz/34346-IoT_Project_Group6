@@ -1,32 +1,30 @@
 #include <stdio.h>
 #include <unistd.h> // needed for sleep
-#include "mRN2483.h"
+#include <string.h> // for memcpy
+#include "esp_log.h"
 
-#define TAG "Main"
+#include "uI2C.h"
+#include "mADXL345.h"
+
+static const char *TAG = "main";
 
 void app_main(void)
 {
-    rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_18, 1024);
-
-    if (rn_init_otaa() != ESP_OK)
-    {
+    i2c_init_master();
+    i2c_master_dev_handle_t dev1_handle;
+    if (i2c_add_slave(0x28, &dev1_handle) != ESP_OK) {
         return;
     }
+    adxl345_init(ADXL345_DEFAULT_ADDRESS);
 
-    ESP_LOGI(TAG, "Sending TX");
-    unsigned int port;
-    char rx_data[10];
+    uint8_t r_buf[sizeof(int)];
+    int r_val;
 
     while (1)
     {
-        if (rn_tx("Sunny Day!", 1, true, rx_data, 10, &port) == ESP_OK && port > 0)
-        {
-            ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
-            ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
-        }
-        ESP_LOGI(TAG, "VDD: %s", rn_send_raw_cmd("sys get vdd"));
-        ESP_LOGI(TAG, "VER: %s", rn_send_raw_cmd("sys get ver"));
-        sleep(60);
+        ESP_ERROR_CHECK(i2c_master_receive(dev1_handle, r_buf, sizeof(int), 1000));
+        memcpy(&r_val, r_buf, sizeof(int));
+        ESP_LOGI(TAG, "Received: %d", r_val);
+        sleep(1);
     }
-
 }
