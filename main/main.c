@@ -35,9 +35,19 @@ This allows the FreeRTOS to allocate ticks to other tasks since the main task is
 
 void app_main(void)
 {
-    state_t state = init;
+    state_t state = wakeup;
     bool stop = 0;
 
+    /* drivers which need to be initialized every boot:
+        - rn_init
+        - ...
+    */
+
+    /* check if this is the intital boot after power-down, if true:
+        (- rn_configure)
+        - rn_init_otaa
+
+    */
     while (!stop)
     {
         switch (state)
@@ -85,7 +95,8 @@ void app_main(void)
             // block and wait for button_press or inactivity
             // then,                                    --> goto: idle
             break;
-        case: txrx:
+        case:
+        txrx:
             // if !stolen, send battery
             // else, send battery + location
             // process RX
