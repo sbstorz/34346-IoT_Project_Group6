@@ -84,7 +84,7 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
 
 esp_err_t rn_init_otaa(void)
 {
-    int retry_cnt = 2;
+    int retry_cnt = 3;
 
     ESP_LOGI(TAG, "mac reset");
     char *rc = rn_send_raw_cmd("mac reset 868");
@@ -94,21 +94,24 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set deveui");
-    rc = rn_send_raw_cmd("mac set deveui 0004A30B010D3F45");
+    //0004A30B010D3F45
+    rc = rn_send_raw_cmd("mac set deveui "CONFIG_LORAWAN_DEVEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "mac set appeui");
-    rc = rn_send_raw_cmd("mac set appeui BE7A000000001465");
+    // BE7A000000001465
+    rc = rn_send_raw_cmd("mac set appeui "CONFIG_LORAWAN_APPEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "mac set appkey");
-    rc = rn_send_raw_cmd("mac set appkey A5FFC8F7C29D6EE92CC1141775C46162");
+    // A5FFC8F7C29D6EE92CC1141775C46162
+    rc = rn_send_raw_cmd("mac set appkey "CONFIG_LORAWAN_APPKEY);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
@@ -145,6 +148,7 @@ esp_err_t rn_init_otaa(void)
     int i = 0;
     do
     {
+        i++;
         ESP_LOGI(TAG, "mac join");
         rc = rn_send_raw_cmd("mac join otaa");
         if (rc == NULL || strcmp(rc, "ok") != 0)
@@ -160,7 +164,7 @@ esp_err_t rn_init_otaa(void)
 
         rxBuf[n] = 0;
 
-        i++;
+        
     } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
 
     if(i >= retry_cnt){
@@ -201,15 +205,8 @@ esp_err_t rn_set_autobaud(void)
     char autobaud_string[1] = {0x55};
     int f_retval = uart_write_bytes(UART_PORT, autobaud_string, 1);
 
-    // /* Check if back alive*/
-    // char *rc = rn_send_raw_cmd("sys get ver");
-    // if (rc == NULL || strncmp(rc, "RN2483",6) != 0)
-    // {
-    //     return ESP_FAIL;
-    // }
 
     /* Check if back alive*/
-
     int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
     if (n <= 0)
     {
