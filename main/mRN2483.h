@@ -26,7 +26,7 @@ typedef enum
 } received_t;
 
 void rn_reset(void);
-int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size);
+int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size, bool reset);
 char *rn_send_raw_cmd(const char *cmd);
 esp_err_t rn_init_otaa(void);
 esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data, size_t rx_data_size, unsigned int *rx_port);

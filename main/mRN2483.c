@@ -183,7 +183,7 @@ void rn_reset(void)
     gpio_set_level(RST_PIN, 1);
 }
 
-int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size)
+int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size, bool reset)
 {
     RST_PIN = rst_io_num;
     TX_PIN = tx_io_num;
@@ -198,7 +198,10 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
     uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
     uart_flush(UART_PORT);
 
-    rn_reset();
+    if(reset){
+        rn_reset();
+    }
+    
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
     memset(rxBuf, 0, RX_BUF_SIZE);
