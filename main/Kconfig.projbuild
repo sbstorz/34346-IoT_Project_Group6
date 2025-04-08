@@ -1,4 +1,21 @@
-menu "Some Example Configuration Options for Credentials ond other Stuff"
+menu "Project Configuration"
+    menu "LoRaWAN"
+        config LORAWAN_DEVEUI
+            string "LoRaWAN deveui"
+            default "XXXXXXXXXXXXXXXX"
+            help
+                Deveui read from the lora module.
+            config LORAWAN_APPEUI
+                string "LoRaWAN appeui"
+                default "XXXXXXXXXXXXXXXX"
+                help
+                    appeui from loriot.
+            config LORAWAN_APPKEY
+                string "LoRaWAN appkey"
+                default "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                help
+                    appkey from Loriot.
+    endmenu
 
     config ESP_WIFI_SSID
         string "WiFi SSID"

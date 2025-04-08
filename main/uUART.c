@@ -49,10 +49,15 @@ int uart_read_data_to_delimiter(uart_port_t uart_num, delimiter_t delimiter, cha
         totLength += length;
 
     } while (length > 0);
-    if (!totLength)
+    if (totLength == 0)
     {
-        ESP_LOGE(TAG, "No Data received");
+        ESP_LOGW(TAG, "No Data received");
         return 0;
+    }
+    if (length < 0)
+    {
+        ESP_LOGE(TAG, "Error receiving data");
+        return -1;
     }
     ESP_LOGI(TAG, "Data received");
     ESP_LOG_BUFFER_HEXDUMP(TAG, rxBuf, totLength, ESP_LOG_INFO);

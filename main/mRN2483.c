@@ -13,12 +13,12 @@ char *rxBuf;
 
 /**
  * @brief enocdes a char buffer to a HEX string representation
- * 
+ *
  * @warning returned buffer must be freed manually!
  * @param dst allocated buffer of size `strlen(src) * 2 + 1` or bigger
  * @param src `\0` delimited string buffer
  */
-static void base16encode(const char *dst, const char *src)
+static void base16encode(char *dst, const char *src)
 {
     // char *data_buf = (char *)malloc(strlen(src) * 2 + 1); // Multiply with 2 since every char needs to be encoded as a HEX value with two chars.
     for (size_t i = 0; i < strlen(src); i++)
@@ -30,7 +30,7 @@ static void base16encode(const char *dst, const char *src)
 /**
  * @brief Decodes a HEX string representation to a char buffer
  * @warning Returned buffer must be freed manually!
- * 
+ *
  * @param dst allocated buffer of size `strlen(src) / 2 + 1` or bigger
  * @param src `\0` delimited string buffer
  *
@@ -38,10 +38,11 @@ static void base16encode(const char *dst, const char *src)
 static void base16decode(char *dst, const char *src)
 {
     size_t len = strlen(src);
-    
-    for (size_t i = 0; i < len; i += 2) {
+
+    for (size_t i = 0; i < len; i += 2)
+    {
         // Convert two hex characters to a byte
-        char hex_byte[3] = { src[i], src[i + 1], '\0' }; // Null-terminate the string
+        char hex_byte[3] = {src[i], src[i + 1], '\0'}; // Null-terminate the string
         dst[i / 2] = (char)strtoul(hex_byte, NULL, 16);
     }
 
@@ -83,6 +84,7 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
 
 esp_err_t rn_init_otaa(void)
 {
+    int retry_cnt = 3;
 
     ESP_LOGI(TAG, "mac reset");
     char *rc = rn_send_raw_cmd("mac reset 868");
@@ -92,21 +94,24 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set deveui");
-    rc = rn_send_raw_cmd("mac set deveui 0004A30B010D3F45");
+    //0004A30B010D3F45
+    rc = rn_send_raw_cmd("mac set deveui "CONFIG_LORAWAN_DEVEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "mac set appeui");
-    rc = rn_send_raw_cmd("mac set appeui BE7A000000001465");
+    // BE7A000000001465
+    rc = rn_send_raw_cmd("mac set appeui "CONFIG_LORAWAN_APPEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "mac set appkey");
-    rc = rn_send_raw_cmd("mac set appkey A5FFC8F7C29D6EE92CC1141775C46162");
+    // A5FFC8F7C29D6EE92CC1141775C46162
+    rc = rn_send_raw_cmd("mac set appkey "CONFIG_LORAWAN_APPKEY);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
@@ -140,22 +145,29 @@ esp_err_t rn_init_otaa(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "mac join");
-    rc = rn_send_raw_cmd("mac join otaa");
-    if (rc == NULL || strcmp(rc, "ok") != 0)
+    int i = 0;
+    do
     {
-        return ESP_FAIL;
-    }
+        i++;
+        ESP_LOGI(TAG, "mac join");
+        rc = rn_send_raw_cmd("mac join otaa");
+        if (rc == NULL || strcmp(rc, "ok") != 0)
+        {
+            return ESP_FAIL;
+        }
 
-    int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 10000);
-    if (n <= 0)
-    {
-        return ESP_FAIL;
-    }
+        int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 20000);
+        if (n <= 0)
+        {
+            return ESP_FAIL;
+        }
 
-    rxBuf[n] = 0;
-    if (strcmp(rxBuf, "accepted") != 0)
-    {
+        rxBuf[n] = 0;
+
+        
+    } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
+
+    if(i >= retry_cnt){
         return ESP_FAIL;
     }
 
@@ -187,12 +199,43 @@ char *rn_send_raw_cmd(const char *cmd)
 esp_err_t rn_set_autobaud(void)
 {
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV);
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_INV_DISABLE);
-    char autobaud_string[3] = {0x55, '\r', '\n'};
+    // char autobaud_string[3] = {0x55, '\r', '\n'};
+    char autobaud_string[1] = {0x55};
     int f_retval = uart_write_bytes(UART_PORT, autobaud_string, 1);
 
-    // CHECK if comm established
+
+    /* Check if back alive*/
+    int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
+    if (n <= 0)
+    {
+        return ESP_FAIL;
+    }
+
+    rxBuf[n] = 0;
+    if (strcmp(rxBuf, "ok") != 0)
+    {
+        return ESP_FAIL;
+    }
+    // char *rc = rn_send_raw_cmd("sys get ver");
+    // if (rc == NULL || strncmp(rc, "RN2483",6) != 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    return ESP_OK;
+}
+
+esp_err_t rn_sleep(void)
+{
+    char *rc = rn_send_raw_cmd("sys sleep 4294967290");
+
+    /* On success we do not get a response*/
+    if (rc != NULL)
+    {
+        return ESP_FAIL;
+    }
 
     return ESP_OK;
 }
@@ -214,7 +257,7 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
     }
 
     /* Transform the integer tx_port to string and send it*/
-    const char buf[5]; // max 123 as tx_port -> three chars + NULL + space
+    char buf[5]; // max 123 as tx_port -> three chars + NULL + space
     sprintf(buf, "%d ", tx_port);
     if (uart_write_bytes(UART_PORT, buf, strlen(buf)) < strlen(buf))
     {
@@ -259,14 +302,14 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
     }
     if (strncmp(rxBuf, "mac_rx ", 7) == 0)
     {
-        char *buf = (char*)malloc(rx_data_size*2);
+        char *buf = (char *)malloc(rx_data_size * 2);
         // Use sscanf to extract port number and data
         int result = sscanf(rxBuf + 7, "%u %s", rx_port, buf);
 
         // Check if the extraction was successful
         if (result != 2)
         {
-            ESP_LOGE(TAG,"Failed to extract port number and data.");
+            ESP_LOGE(TAG, "Failed to extract port number and data.");
             free(buf);
             return ESP_FAIL;
         }
@@ -274,7 +317,7 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
         // Validate port number
         if (*rx_port < 1 || *rx_port > 223)
         {
-            ESP_LOGE(TAG,"Port number out of range: %d", *rx_port);
+            ESP_LOGE(TAG, "Port number out of range: %d", *rx_port);
             free(buf);
             return 1;
         }

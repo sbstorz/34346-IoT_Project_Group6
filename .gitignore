@@ -1,3 +1,5 @@
+*.pdf
+
 # Ignore sdkconfig to not share Wifi Credentials
 sdkconfig*
 
