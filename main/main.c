@@ -27,7 +27,7 @@ void app_main(void)
         ESP_LOGI(TAG, "VDD: %s", rn_send_raw_cmd("sys get vdd"));
         ESP_LOGI(TAG, "VER: %s", rn_send_raw_cmd("sys get ver"));
         ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
-        sleep(15);
+        sleep(60);
         ESP_ERROR_CHECK_WITHOUT_ABORT(rn_wake());
     }
 

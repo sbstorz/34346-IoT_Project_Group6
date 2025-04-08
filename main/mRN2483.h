@@ -21,6 +21,7 @@ typedef enum
     radio_err,
     radio_tx_ok,
     silent,
+    EMPTY,
     UNKNOWN
 } received_t;
 
