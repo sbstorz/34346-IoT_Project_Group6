@@ -49,6 +49,132 @@ static void base16decode(char *dst, const char *src)
     dst[len / 2] = '\0'; // Null-terminate the decoded string
 }
 
+/**
+ * @brief parses a response buffer and returns the correponding enumerator
+ *
+ * @param rsp `\0` delimited string buffer
+ * @return `received_t` object
+ *
+ */
+static received_t parse_response(const char *rsp)
+{
+    if (rsp == NULL)
+    {
+        return EMPTY;
+    }
+    if (strcmp(rsp, "ok") == 0)
+    {
+        return ok;
+    }
+    else if (strcmp(rsp, "busy") == 0)
+    {
+        return busy;
+    }
+    else if (strcmp(rsp, "frame_counter_err_rejoin_needed") == 0)
+    {
+        return frame_counter_err_rejoin_needed;
+    }
+    else if (strcmp(rsp, "invalid_data_len") == 0)
+    {
+        return invalid_data_len;
+    }
+    else if (strcmp(rsp, "invalid_param") == 0)
+    {
+        return invalid_param;
+    }
+    else if (strcmp(rsp, "mac_err") == 0)
+    {
+        return mac_err;
+    }
+    else if (strcmp(rsp, "mac_paused") == 0)
+    {
+        return mac_paused;
+    }
+    else if (strcmp(rsp, "mac_rx") == 0)
+    {
+        return mac_rx;
+    }
+    else if (strcmp(rsp, "mac_tx_ok") == 0)
+    {
+        return mac_tx_ok;
+    }
+    else if (strcmp(rsp, "no_free_ch") == 0)
+    {
+        return no_free_ch;
+    }
+    else if (strcmp(rsp, "not_joined") == 0)
+    {
+        return not_joined;
+    }
+    else if (strcmp(rsp, "radio_err") == 0)
+    {
+        return radio_err;
+    }
+    else if (strcmp(rsp, "radio_tx_ok") == 0)
+    {
+        return radio_tx_ok;
+    }
+    else if (strcmp(rsp, "silent") == 0)
+    {
+        return silent;
+    }
+    else
+    {
+        return UNKNOWN;
+    }
+}
+
+/**
+ * @brief sends a mac tx command with data and returns the immediate response
+ *
+ * @param tx_data `\0` delimited string buffer
+ * @param tx_port port number 1 - 223
+ * @param encode if the payload is to be interpreted as a string buffer
+ * @param rx_data pointer to buffer holding the immediate response data (points to global rx_buf)
+ * @return esp error type
+ *
+ */
+static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, char **rx_data)
+{
+    /* Send the tx command with unconfirmed mode*/
+    const char *cmd = "mac tx uncnf ";
+    uart_flush(UART_PORT);
+    if (uart_write_bytes(UART_PORT, cmd, strlen(cmd)) < strlen(cmd))
+    {
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    /* Transform the integer tx_port to string and send it*/
+    char buf[5]; // max 123 as tx_port -> three chars + NULL + space
+    sprintf(buf, "%d ", tx_port);
+    if (uart_write_bytes(UART_PORT, buf, strlen(buf)) < strlen(buf))
+    {
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    if (encode)
+    {
+        char *data_buf = (char *)malloc(strlen(tx_data) * 2 + 1); // Multiply with 2 since every char needs to be encoded as a HEX value with two chars.
+        base16encode(data_buf, tx_data);
+        if (uart_write_bytes(UART_PORT, data_buf, strlen(data_buf)) < strlen(data_buf))
+        {
+            return ESP_ERR_NOT_FINISHED;
+        }
+        free(data_buf);
+    }
+    else
+    {
+        if (uart_write_bytes(UART_PORT, tx_data, strlen(tx_data)) < strlen(tx_data))
+        {
+            return ESP_ERR_NOT_FINISHED;
+        }
+    }
+
+    ESP_LOGI(TAG, "mac tx");
+    *rx_data = rn_send_raw_cmd("");
+    return ESP_OK;
+}
+
 void rn_reset(void)
 {
 
@@ -57,7 +183,7 @@ void rn_reset(void)
     gpio_set_level(RST_PIN, 1);
 }
 
-int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size)
+int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size, bool reset)
 {
     RST_PIN = rst_io_num;
     TX_PIN = tx_io_num;
@@ -72,7 +198,10 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
     uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
     uart_flush(UART_PORT);
 
-    rn_reset();
+    if(reset){
+        rn_reset();
+    }
+    
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
     memset(rxBuf, 0, RX_BUF_SIZE);
@@ -94,8 +223,8 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set deveui");
-    //0004A30B010D3F45
-    rc = rn_send_raw_cmd("mac set deveui "CONFIG_LORAWAN_DEVEUI);
+    // 0004A30B010D3F45
+    rc = rn_send_raw_cmd("mac set deveui " CONFIG_LORAWAN_DEVEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
@@ -103,7 +232,7 @@ esp_err_t rn_init_otaa(void)
 
     ESP_LOGI(TAG, "mac set appeui");
     // BE7A000000001465
-    rc = rn_send_raw_cmd("mac set appeui "CONFIG_LORAWAN_APPEUI);
+    rc = rn_send_raw_cmd("mac set appeui " CONFIG_LORAWAN_APPEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
@@ -111,7 +240,7 @@ esp_err_t rn_init_otaa(void)
 
     ESP_LOGI(TAG, "mac set appkey");
     // A5FFC8F7C29D6EE92CC1141775C46162
-    rc = rn_send_raw_cmd("mac set appkey "CONFIG_LORAWAN_APPKEY);
+    rc = rn_send_raw_cmd("mac set appkey " CONFIG_LORAWAN_APPKEY);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
@@ -164,10 +293,10 @@ esp_err_t rn_init_otaa(void)
 
         rxBuf[n] = 0;
 
-        
     } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
 
-    if(i >= retry_cnt){
+    if (i >= retry_cnt)
+    {
         return ESP_FAIL;
     }
 
@@ -198,15 +327,15 @@ char *rn_send_raw_cmd(const char *cmd)
 
 esp_err_t rn_set_autobaud(void)
 {
+    uart_flush(UART_PORT);
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV);
     vTaskDelay(100 / portTICK_PERIOD_MS);
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_INV_DISABLE);
-    // char autobaud_string[3] = {0x55, '\r', '\n'};
     char autobaud_string[1] = {0x55};
-    int f_retval = uart_write_bytes(UART_PORT, autobaud_string, 1);
-
+    uart_write_bytes(UART_PORT, autobaud_string, 1);
 
     /* Check if back alive*/
+    
     int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
     if (n <= 0)
     {
@@ -218,11 +347,6 @@ esp_err_t rn_set_autobaud(void)
     {
         return ESP_FAIL;
     }
-    // char *rc = rn_send_raw_cmd("sys get ver");
-    // if (rc == NULL || strncmp(rc, "RN2483",6) != 0)
-    // {
-    //     return ESP_FAIL;
-    // }
 
     return ESP_OK;
 }
@@ -248,48 +372,45 @@ esp_err_t rn_wake(void)
 esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data, size_t rx_data_size, unsigned int *rx_port)
 {
     *rx_port = 0;
-    /* Send the tx command with unconfirmed mode*/
-    const char *cmd = "mac tx uncnf ";
-    uart_flush(UART_PORT);
-    if (uart_write_bytes(UART_PORT, cmd, strlen(cmd)) < strlen(cmd))
-    {
-        return ESP_ERR_NOT_FINISHED;
-    }
 
-    /* Transform the integer tx_port to string and send it*/
-    char buf[5]; // max 123 as tx_port -> three chars + NULL + space
-    sprintf(buf, "%d ", tx_port);
-    if (uart_write_bytes(UART_PORT, buf, strlen(buf)) < strlen(buf))
+    
+    bool stop = 0;
+    unsigned int i = 0;
+    do
     {
-        return ESP_ERR_NOT_FINISHED;
-    }
-
-    if (encode)
-    {
-        char *data_buf = (char *)malloc(strlen(tx_data) * 2 + 1); // Multiply with 2 since every char needs to be encoded as a HEX value with two chars.
-        base16encode(data_buf, tx_data);
-        if (uart_write_bytes(UART_PORT, data_buf, strlen(data_buf)) < strlen(data_buf))
+        char *rc;
+        send_tx_cmd(tx_data, tx_port, encode, &rc);
+        switch (parse_response(rc))
         {
-            return ESP_ERR_NOT_FINISHED;
-        }
-        free(data_buf);
-    }
-    else
-    {
-        if (uart_write_bytes(UART_PORT, tx_data, strlen(tx_data)) < strlen(tx_data))
-        {
-            return ESP_ERR_NOT_FINISHED;
-        }
-    }
+        case ok:
+            stop = 1;
+            break;
 
-    ESP_LOGI(TAG, "mac tx");
-    char *rc = rn_send_raw_cmd("");
-    if (strcmp(rc, "ok") != 0)
-    {
+        case frame_counter_err_rejoin_needed:
+        case not_joined:
+            if (rn_init_otaa() != ESP_OK)
+            {
+                return ESP_FAIL;
+            }
+            break;
+
+        case busy:
+        case no_free_ch:
+            vTaskDelay(10000 / portTICK_PERIOD_MS);
+            break;
+
+        default:
+            return ESP_FAIL;
+            break;
+        }
+        i++;
+    } while (!stop && i < 10);
+
+    if(i >= 10){
         return ESP_FAIL;
     }
 
-    int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 10000);
+    int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 20000);
     if (n <= 0)
     {
         return ESP_FAIL;

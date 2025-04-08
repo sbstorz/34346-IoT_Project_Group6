@@ -1,5 +1,7 @@
 #include <stdio.h>
-#include <unistd.h> // needed for sleep
+#include <time.h>
+#include <sys/time.h>
+#include "esp_sleep.h"
 #include "mRN2483.h"
 
 #define TAG "Main"
@@ -15,15 +17,17 @@ typedef enum
     stolen,
     light_auto,
     dsleep,
-    lsleep,
-    UNKNOWN
+    lsleep
 } state_t;
 
-/* Vars that should be stored persistenly over deep sleep should be stored in RTC memory: */
-// Last TXRX
-// Last Wakeuptime
-// flags (stolen,...)
-// initial boot flag
+/* Vars that should be stored persistenly over deep sleep should be stored in RTC memory:
+    - Last TXRX
+    - Last Wakeuptime
+    - flags (stolen,...)
+    - initial boot flag
+*/
+static RTC_DATA_ATTR struct timeval sleep_enter_time;
+static RTC_DATA_ATTR uint8_t state_flags = 0;
 
 /* Configuration data that is rarely accessed should be stored in NVS*/
 // dont know yet, but could be user (at runtime) configured WIFI credentials (FOR EXAMPLE)
@@ -44,10 +48,35 @@ void app_main(void)
     */
 
     /* check if this is the intital boot after power-down, if true:
-        (- rn_configure)
         - rn_init_otaa
 
     */
+    ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
+    if (!state_flags & (1 << 0))
+    {
+        ESP_LOGI(TAG, "Initial Boot");
+        state_flags |= (1 << 0);
+        rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_18, 1024, true);
+
+        if (rn_init_otaa() != ESP_OK)
+        {
+            return;
+        }
+    }
+    else
+    {
+        if (rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_18, 1024, false) != ESP_OK)
+        {
+            return;
+        }
+        if (rn_wake() != ESP_OK)
+        {
+            return;
+        }
+    }
+
+
+
     while (!stop)
     {
         switch (state)
@@ -59,6 +88,28 @@ void app_main(void)
             // if move,                                 --> goto: light_auto
             // if button,                               --> goto: light_on
             // if timer,                                --> goto: idle
+
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            int sleep_time_ms = (now.tv_sec - sleep_enter_time.tv_sec) * 1000 + (now.tv_usec - sleep_enter_time.tv_usec) / 1000;
+
+            switch (esp_sleep_get_wakeup_cause())
+            {
+            case ESP_SLEEP_WAKEUP_TIMER:
+            {
+                ESP_LOGI(TAG, "Wake up from timer. Time spent in deep sleep: %dms\n", sleep_time_ms);
+                break;
+            }
+            case ESP_SLEEP_WAKEUP_UNDEFINED:
+            {
+                ESP_LOGI(TAG, "Wake up not from deep sleep");
+                break;
+            }
+            default:
+                break;
+            }
+
+            state = txrx;
             break;
 
         case light_auto:
@@ -95,8 +146,7 @@ void app_main(void)
             // block and wait for button_press or inactivity
             // then,                                    --> goto: idle
             break;
-        case:
-        txrx:
+        case txrx:
             // if !stolen, send battery
             // else, send battery + location
             // process RX
@@ -104,16 +154,31 @@ void app_main(void)
             // send battery + location
             // reconfigure wakeups
 
+            ESP_LOGI(TAG, "Sending TX");
+            unsigned int port;
+            char rx_data[10];
+            if (rn_tx("Sunny Day!", 1, true, rx_data, 10, &port) == ESP_OK && port > 0)
+            {
+                ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
+                ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
+            }
+            ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
+            state = dsleep;
+
             break;
 
         case dsleep:
+            const int wakeup_time_sec = 20;
+            ESP_LOGI(TAG, "Enabling timer wakeup, %ds\n", wakeup_time_sec);
+            ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(wakeup_time_sec * 1000000));
             stop = 1;
             break;
         default:
             break;
         }
-        usleep(10);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
     // enter deep sleep
+    esp_deep_sleep_start();
 }
