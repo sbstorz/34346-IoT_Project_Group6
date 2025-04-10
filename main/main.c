@@ -6,7 +6,7 @@
 
 void app_main(void)
 {
-    rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_18, 1024, true);
+    rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
 
     if (rn_init_otaa() != ESP_OK)
     {
