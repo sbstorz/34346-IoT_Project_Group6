@@ -177,10 +177,15 @@ static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, c
 
 void rn_reset(void)
 {
+    // gpio_reset_pin(RST_PIN);
+    // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
+    // gpio_pullup_en(RST_PIN);
 
     gpio_set_level(RST_PIN, 0);
     vTaskDelay(10 / portTICK_PERIOD_MS);
     gpio_set_level(RST_PIN, 1);
+
+    // gpio_reset_pin(RST_PIN);
 }
 
 int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size, bool reset)
@@ -191,21 +196,34 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
     UART_PORT = uart_num;
     RX_BUF_SIZE = rx_buffer_size;
 
-    gpio_reset_pin(RST_PIN);
+    // gpio_reset_pin(RST_PIN);
     /* Set the GPIO as a push/pull output */
-    gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
+    // gpio_config_t cfg = {
+    //     .pin_bit_mask = BIT64(RST_PIN),
+    //     .mode = GPIO_MODE_DEF_OUTPUT,
+    //     // for powersave reasons, the GPIO should not be floating, select pullup
+    //     .pull_up_en = true,
+    //     .pull_down_en = false,
+    //     .intr_type = GPIO_INTR_DISABLE,
+    // };
+    // gpio_config(&cfg);
+
+    // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
+    // gpio_pullup_en(RST_PIN);
+    // gpio_set_level(RST_PIN, 1);
 
     uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
     uart_flush(UART_PORT);
 
-    if(reset){
-        rn_reset();
+    if (reset)
+    {
+        // rn_reset();
     }
-    
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
     memset(rxBuf, 0, RX_BUF_SIZE);
-    uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
+    uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
+
     // uart_flush(UART_PORT);
 
     return 0;
@@ -327,7 +345,6 @@ char *rn_send_raw_cmd(const char *cmd)
 
 esp_err_t rn_set_autobaud(void)
 {
-    uart_flush(UART_PORT);
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV);
     vTaskDelay(100 / portTICK_PERIOD_MS);
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_INV_DISABLE);
@@ -335,15 +352,22 @@ esp_err_t rn_set_autobaud(void)
     uart_write_bytes(UART_PORT, autobaud_string, 1);
 
     /* Check if back alive*/
-    
-    int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
-    if (n <= 0)
-    {
-        return ESP_FAIL;
-    }
+    // uart_flush(UART_PORT);
 
-    rxBuf[n] = 0;
-    if (strcmp(rxBuf, "ok") != 0)
+    // int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
+    // if (n <= 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    // rxBuf[n] = 0;
+    // if (strcmp(rxBuf, "ok") != 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    char *rc = rn_send_raw_cmd("sys get ver");
+    if (rc == NULL || strncmp(rc, "RN2483", 6) != 0)
     {
         return ESP_FAIL;
     }
@@ -366,14 +390,26 @@ esp_err_t rn_sleep(void)
 
 esp_err_t rn_wake(void)
 {
-    return rn_set_autobaud();
+    unsigned int i = 0;
+    while (1)
+    {
+        if (rn_set_autobaud() == ESP_OK)
+        {
+            return ESP_OK;
+        }
+        if (i++ >= 5)
+        {
+            return ESP_FAIL;
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+    return ESP_FAIL;
 }
 
 esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data, size_t rx_data_size, unsigned int *rx_port)
 {
     *rx_port = 0;
 
-    
     bool stop = 0;
     unsigned int i = 0;
     do
@@ -406,7 +442,8 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
         i++;
     } while (!stop && i < 10);
 
-    if(i >= 10){
+    if (i >= 10)
+    {
         return ESP_FAIL;
     }
 
