@@ -10,21 +10,44 @@ static const char *TAG = "main";
 
 void app_main(void)
 {
+    // Initialize the I2C master
     i2c_init_master();
-    i2c_master_dev_handle_t dev1_handle;
-    if (i2c_add_slave(0x28, &dev1_handle) != ESP_OK) {
+
+    // Add the ADXL345 as a slave device
+    i2c_master_dev_handle_t adxl345_handle = NULL;
+    if (i2c_add_slave(ADXL345_DEFAULT_ADDRESS, &adxl345_handle) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to add ADXL345 as a slave device. Exiting.");
         return;
     }
-    adxl345_init(ADXL345_DEFAULT_ADDRESS);
 
-    uint8_t r_buf[sizeof(int)];
-    int r_val;
+    // Test communication with the ADXL345
+    if (adxl345_chipid() == ESP_OK)
+    {
+        ESP_LOGI(TAG, "ADXL345 communication successful.");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to communicate with ADXL345. Exiting.");
+        return;
+    }
 
+    // Initialize the ADXL345 sensor
+    if (!adxl345_begin())
+    {
+        ESP_LOGE(TAG, "Failed to initialize ADXL345. Exiting.");
+        return;
+    }
+
+    ESP_LOGI(TAG, "ADXL345 initialized successfully.");
+
+    // Read and log acceleration data in a loop
+    adxl345_xyz_t accel_data;
     while (1)
     {
-        ESP_ERROR_CHECK(i2c_master_receive(dev1_handle, r_buf, sizeof(int), 1000));
-        memcpy(&r_val, r_buf, sizeof(int));
-        ESP_LOGI(TAG, "Received: %d", r_val);
-        sleep(1);
+        adxl345_get_accel(&accel_data);
+        ESP_LOGI(TAG, "Acceleration Data - X: %.2f m/s^2, Y: %.2f m/s^2, Z: %.2f m/s^2",
+                 accel_data.x_ms, accel_data.y_ms, accel_data.z_ms);
+        sleep(1); // Delay for 1 second
     }
 }
