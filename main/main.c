@@ -42,39 +42,23 @@ void app_main(void)
     state_t state = wakeup;
     bool stop = 0;
 
-    /* drivers which need to be initialized every boot:
-        - rn_init
-        - ...
-    */
 
-    /* check if this is the intital boot after power-down, if true:
-        - rn_init_otaa
-
-    */
     ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
     if (!state_flags & (1 << 0))
     {
         ESP_LOGI(TAG, "Initial Boot");
         state_flags |= (1 << 0);
-        rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
-
-        if (rn_init_otaa() != ESP_OK)
-        {
-            return;
-        }
     }
     else
     {
-        if (rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_4, 1024, false) != ESP_OK)
-        {
-            return;
-        }
-        if (rn_wake() != ESP_OK)
-        {
-            return;
-        }
+       
     }
-
+    rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_33, 256);
+    // rn_init_otaa();
+    if (rn_join() != ESP_OK)
+    {
+        return;
+    }
 
 
     while (!stop)
@@ -162,15 +146,16 @@ void app_main(void)
                 ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
                 ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
             }
-            ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
+            
             state = dsleep;
 
             break;
 
         case dsleep:
-            const int wakeup_time_sec = 10;
+            const int wakeup_time_sec = 60;
             ESP_LOGI(TAG, "Enabling timer wakeup, %ds\n", wakeup_time_sec);
             ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(wakeup_time_sec * 1000000));
+            rn_power_off();
             stop = 1;
             break;
         default:

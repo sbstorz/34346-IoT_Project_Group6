@@ -41,7 +41,7 @@ int uart_read_data_to_delimiter(uart_port_t uart_num, delimiter_t delimiter, cha
         }
 
         length = uart_read_bytes(uart_num, &rxBuf[totLength], 1, timeout_ms / portTICK_PERIOD_MS);
-        
+
         if (rxBuf[totLength] == del_char)
         {
             break;
@@ -91,4 +91,8 @@ void uart_init_driver(uart_port_t uart_num, int tx_io_num, int rx_io_num, int ba
     uart_driver_install(uart_num, rx_buffer_size, 0, 0, NULL, 0);
     uart_param_config(uart_num, &uart_config);
     uart_set_pin(uart_num, tx_io_num, rx_io_num, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+}
+
+void uart_delete_driver(uart_port_t uart_num){
+    uart_driver_delete(uart_num);
 }

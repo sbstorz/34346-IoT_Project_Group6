@@ -2,14 +2,14 @@
 
 #define TAG "RN2483"
 
-static gpio_num_t RST_PIN;
+static gpio_num_t PWR_PIN;
 static gpio_num_t RX_PIN;
 static gpio_num_t TX_PIN;
 static uart_port_t UART_PORT;
 
 static int BAUDRATE = 57600;
 static int RX_BUF_SIZE = 1024;
-char *rxBuf;
+static char *rxBuf;
 
 /**
  * @brief enocdes a char buffer to a HEX string representation
@@ -177,54 +177,41 @@ static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, c
 
 void rn_reset(void)
 {
-    // gpio_reset_pin(RST_PIN);
-    // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
-    // gpio_pullup_en(RST_PIN);
+    // gpio_reset_pin(PWR_PIN);
+    // gpio_set_direction(PWR_PIN, GPIO_MODE_OUTPUT);
+    // gpio_pullup_en(PWR_PIN);
 
-    gpio_set_level(RST_PIN, 0);
+    gpio_set_level(PWR_PIN, 0);
     vTaskDelay(10 / portTICK_PERIOD_MS);
-    gpio_set_level(RST_PIN, 1);
+    gpio_set_level(PWR_PIN, 1);
 
-    // gpio_reset_pin(RST_PIN);
+    // gpio_reset_pin(PWR_PIN);
 }
 
-int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size, bool reset)
+int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t pwr_io_num, int rx_buffer_size)
 {
-    RST_PIN = rst_io_num;
+    PWR_PIN = pwr_io_num;
     TX_PIN = tx_io_num;
     RX_PIN = rx_io_num;
     UART_PORT = uart_num;
     RX_BUF_SIZE = rx_buffer_size;
 
-    // gpio_reset_pin(RST_PIN);
-    /* Set the GPIO as a push/pull output */
-    // gpio_config_t cfg = {
-    //     .pin_bit_mask = BIT64(RST_PIN),
-    //     .mode = GPIO_MODE_DEF_OUTPUT,
-    //     // for powersave reasons, the GPIO should not be floating, select pullup
-    //     .pull_up_en = true,
-    //     .pull_down_en = false,
-    //     .intr_type = GPIO_INTR_DISABLE,
-    // };
-    // gpio_config(&cfg);
-
-    // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
-    // gpio_pullup_en(RST_PIN);
-    // gpio_set_level(RST_PIN, 1);
-
-    uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
-    uart_flush(UART_PORT);
-
-    if (reset)
-    {
-        // rn_reset();
-    }
+    // uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
-    memset(rxBuf, 0, RX_BUF_SIZE);
-    uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
+    memset(rxBuf, 1, RX_BUF_SIZE);
+    // uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
 
-    // uart_flush(UART_PORT);
+    gpio_config_t cfg = {
+        .pin_bit_mask = BIT64(PWR_PIN),
+        .mode = GPIO_MODE_OUTPUT_OD,
+        .pull_up_en = false, // disable all weak pull resistors as the pin is pulled high externally
+        .pull_down_en = false,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+    gpio_set_level(PWR_PIN, 0);
+    rn_power_on();
 
     return 0;
 }
@@ -259,6 +246,30 @@ esp_err_t rn_init_otaa(void)
     ESP_LOGI(TAG, "mac set appkey");
     // A5FFC8F7C29D6EE92CC1141775C46162
     rc = rn_send_raw_cmd("mac set appkey " CONFIG_LORAWAN_APPKEY);
+    if (rc == NULL || strcmp(rc, "ok") != 0)
+    {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "mac set devaddr");
+    // A5FFC8F7C29D6EE92CC1141775C46162
+    rc = rn_send_raw_cmd("mac set devaddr 00000000");
+    if (rc == NULL || strcmp(rc, "ok") != 0)
+    {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "mac set nwkskey");
+    // A5FFC8F7C29D6EE92CC1141775C46162
+    rc = rn_send_raw_cmd("mac set nwkskey 00000000000000000000000000000000");
+    if (rc == NULL || strcmp(rc, "ok") != 0)
+    {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "mac set appskey");
+    // A5FFC8F7C29D6EE92CC1141775C46162
+    rc = rn_send_raw_cmd("mac set appskey 00000000000000000000000000000000");
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
@@ -318,7 +329,100 @@ esp_err_t rn_init_otaa(void)
         return ESP_FAIL;
     }
 
+    rn_send_raw_cmd("mac save");
+    uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 5000);
+
+    /* write to non-volatile memory, set flag that OTAA keys have been saved in memory*/
+    rn_send_raw_cmd("sys set nvm 300 01");
+
     return ESP_OK;
+}
+
+esp_err_t rn_init_abp(void)
+{
+    int retry_cnt = 3;
+
+    ESP_LOGI(TAG, "sys reset");
+    char *rc = rn_send_raw_cmd("sys reset");
+    // if (rc == NULL || strncmp(rc, "RN2483",6) != 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    ESP_LOGI(TAG, "radio set pwr");
+    rc = rn_send_raw_cmd("radio set pwr 14");
+    if (rc == NULL || strcmp(rc, "ok") != 0)
+    {
+        return ESP_FAIL;
+    }
+
+    // ESP_LOGI(TAG, "mac set dr");
+    // rc = rn_send_raw_cmd("mac set dr 2");
+    // if (rc == NULL || strcmp(rc, "ok") != 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    // ESP_LOGI(TAG, "mac set adr");
+    // rc = rn_send_raw_cmd("mac set adr off");
+    // if (rc == NULL || strcmp(rc, "ok") != 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    // ESP_LOGI(TAG, "mac set ar");
+    // rc = rn_send_raw_cmd("mac set ar off");
+    // if (rc == NULL || strcmp(rc, "ok") != 0)
+    // {
+    //     return ESP_FAIL;
+    // }
+
+    int i = 0;
+    do
+    {
+        i++;
+        ESP_LOGI(TAG, "mac join abp");
+        rc = rn_send_raw_cmd("mac join abp");
+        if (rc == NULL || strcmp(rc, "ok") != 0)
+        {
+            return ESP_FAIL;
+        }
+
+        int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 20000);
+        if (n <= 0)
+        {
+            return ESP_FAIL;
+        }
+
+        rxBuf[n] = 0;
+
+    } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
+
+    if (i >= retry_cnt)
+    {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t rn_join(void)
+{
+    /* Check from NVM if the OTAA keys have been saved by checking a flag which is set when the former was succesfull*/
+    char *rc = rn_send_raw_cmd("sys get nvm 300");
+    if(rc == NULL){
+        return ESP_FAIL;
+    }
+    unsigned int value;
+    sscanf(rc, "%x", &value);
+    if (value & (1 << 0))
+    {
+        return rn_init_abp();
+    }
+    else
+    {
+        return rn_init_otaa();
+    }
 }
 
 // TODO: should be static and is not thread safe!
@@ -339,6 +443,7 @@ char *rn_send_raw_cmd(const char *cmd)
         return NULL;
     }
 
+    ESP_LOGI(TAG, "Writing a 0 at %d", n);
     rxBuf[n] = 0;
     return rxBuf;
 }
@@ -360,6 +465,7 @@ esp_err_t rn_set_autobaud(void)
     //     return ESP_FAIL;
     // }
 
+    // ESP_LOGI(TAG,"Writing a 0 at %d",n);
     // rxBuf[n] = 0;
     // if (strcmp(rxBuf, "ok") != 0)
     // {
@@ -372,6 +478,55 @@ esp_err_t rn_set_autobaud(void)
         return ESP_FAIL;
     }
 
+    return ESP_OK;
+}
+
+esp_err_t rn_power_on(void)
+{
+    for (size_t i = 0; i < 5; i++)
+    {
+        ESP_LOGI(TAG, "Power on %d", i);
+        gpio_set_level(PWR_PIN, 0);
+
+        uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
+
+        uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
+
+        /* Check if back alive*/
+        char *rc = rn_send_raw_cmd("sys get ver");
+
+        if (rc != NULL && strncmp(rc, "RN2483", 6) == 0)
+        {
+            return ESP_OK;
+        }
+        else
+        {
+            gpio_set_level(PWR_PIN, 1);
+
+            uart_delete_driver(UART_PORT);
+
+            gpio_config_t cfg = {
+                .pin_bit_mask = (1ULL << TX_PIN | 1ULL << RX_PIN),
+                .mode = GPIO_MODE_OUTPUT,
+                .pull_up_en = false,
+                .pull_down_en = false,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            gpio_config(&cfg);
+
+            gpio_set_level(RX_PIN, 0);
+            gpio_set_level(TX_PIN, 0);
+
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+    }
+
+    return ESP_FAIL;
+}
+
+esp_err_t rn_power_off(void)
+{
+    gpio_set_level(PWR_PIN, 1);
     return ESP_OK;
 }
 
@@ -453,6 +608,7 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
         return ESP_FAIL;
     }
 
+    ESP_LOGI(TAG, "Writing a 0 at %d", n);
     rxBuf[n] = 0;
     if (strcmp(rxBuf, "mac_tx_ok") == 0)
     {
