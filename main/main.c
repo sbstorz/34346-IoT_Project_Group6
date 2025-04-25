@@ -56,7 +56,8 @@ void app_main(void)
     {
         ESP_LOGI(TAG, "Initial Boot");
         state_flags |= (1 << 0);
-        rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
+        /* TX on GPIO 5 since this is pulled up after reset and during sleep, reset could be removed since MCU and Lora module are always restarted together*/
+        rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
 
         if (rn_init_otaa() != ESP_OK)
         {
@@ -65,7 +66,7 @@ void app_main(void)
     }
     else
     {
-        if (rn_init(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_4, 1024, false) != ESP_OK)
+        if (rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, false) != ESP_OK)
         {
             return;
         }
@@ -168,7 +169,7 @@ void app_main(void)
             break;
 
         case dsleep:
-            const int wakeup_time_sec = 10;
+            const int wakeup_time_sec = 60;
             ESP_LOGI(TAG, "Enabling timer wakeup, %ds\n", wakeup_time_sec);
             ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(wakeup_time_sec * 1000000));
             stop = 1;
