@@ -20,7 +20,6 @@ char *rxBuf;
  */
 static void base16encode(char *dst, const char *src)
 {
-    // char *data_buf = (char *)malloc(strlen(src) * 2 + 1); // Multiply with 2 since every char needs to be encoded as a HEX value with two chars.
     for (size_t i = 0; i < strlen(src); i++)
     {
         sprintf(&dst[i * 2], "%02x", src[i]);
@@ -136,6 +135,7 @@ static received_t parse_response(const char *rsp)
  */
 static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, char **rx_data)
 {
+    ESP_LOGI(TAG, "mac tx");
     /* Send the tx command with unconfirmed mode*/
     const char *cmd = "mac tx uncnf ";
     uart_flush(UART_PORT);
@@ -160,6 +160,7 @@ static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, c
         {
             return ESP_ERR_NOT_FINISHED;
         }
+        
         free(data_buf);
     }
     else
@@ -170,7 +171,7 @@ static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, c
         }
     }
 
-    ESP_LOGI(TAG, "mac tx");
+    
     *rx_data = rn_send_raw_cmd("");
     return ESP_OK;
 }

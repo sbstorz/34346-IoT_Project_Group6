@@ -3,6 +3,7 @@
 #include <sys/time.h>
 #include "esp_sleep.h"
 #include "mRN2483.h"
+#include "mGNSS.h"
 
 #define TAG "Main"
 
@@ -42,6 +43,10 @@ void app_main(void)
     state_t state = wakeup;
     bool stop = 0;
 
+    // test();
+
+    // return;
+
     /* drivers which need to be initialized every boot:
         - rn_init
         - ...
@@ -51,6 +56,12 @@ void app_main(void)
         - rn_init_otaa
 
     */
+
+    if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23) != ESP_OK)
+    {
+        return;
+    }
+
     ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
     if (!state_flags & (1 << 0))
     {
@@ -66,17 +77,7 @@ void app_main(void)
     }
     else
     {
-        if (rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, false) != ESP_OK)
-        {
-            return;
-        }
-        if (rn_wake() != ESP_OK)
-        {
-            return;
-        }
     }
-
-
 
     while (!stop)
     {
@@ -99,6 +100,7 @@ void app_main(void)
             case ESP_SLEEP_WAKEUP_TIMER:
             {
                 ESP_LOGI(TAG, "Wake up from timer. Time spent in deep sleep: %dms\n", sleep_time_ms);
+                state = idle;
                 break;
             }
             case ESP_SLEEP_WAKEUP_UNDEFINED:
@@ -124,6 +126,7 @@ void app_main(void)
             // if led is on, turn off
             // if last transm. older than T hours,      --> goto: TXRX
             // else,                                    --> goto: dsleep
+
             break;
 
         case led_on:
@@ -155,20 +158,50 @@ void app_main(void)
             // send battery + location
             // reconfigure wakeups
 
+            char msg[9];
+            int32_t latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc;
+            if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 10*60) == ESP_OK)
+            {
+                ESP_LOGI(TAG, "I am here: https://maps.google.com/?q=%3.7f,%3.7f; Height: %.3f; Horizontal Uncertainty: %.3f; Vertical Uncertainty: %.3f ",
+                         ((float)latitudeX1e7) / 10000000,
+                         ((float)longitudeX1e7) / 10000000,
+                         ((float)hMSL) / 1000,
+                         ((float)hAcc) / 1000,
+                         ((float)vAcc) / 1000);
+            }
+
+            memcpy(msg, &latitudeX1e7, sizeof(int32_t));
+            memcpy(msg + 4, &longitudeX1e7, sizeof(int32_t));
+            msg[8] = 0;
+
+            ESP_LOG_BUFFER_HEXDUMP(TAG, msg, 9, ESP_LOG_INFO);
+
+            if (rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, false) != ESP_OK)
+            {
+                return;
+            }
+            if (rn_wake() != ESP_OK)
+            {
+                return;
+            }
+
             ESP_LOGI(TAG, "Sending TX");
             unsigned int port;
             char rx_data[10];
-            if (rn_tx("Sunny Day!", 1, true, rx_data, 10, &port) == ESP_OK && port > 0)
+            if (rn_tx(msg, 1, true, rx_data, 10, &port) == ESP_OK && port > 0)
             {
                 ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
                 ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
             }
-            ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
             state = dsleep;
 
             break;
 
         case dsleep:
+
+            ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
+            gnss_sleep();
+
             const int wakeup_time_sec = 60;
             ESP_LOGI(TAG, "Enabling timer wakeup, %ds\n", wakeup_time_sec);
             ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(wakeup_time_sec * 1000000));
@@ -181,5 +214,6 @@ void app_main(void)
     }
 
     // enter deep sleep
+    gettimeofday(&sleep_enter_time, NULL);
     esp_deep_sleep_start();
 }
