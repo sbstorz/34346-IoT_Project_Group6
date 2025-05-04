@@ -57,7 +57,7 @@ void app_main(void)
 
     */
 
-    if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23) != ESP_OK)
+    if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23, GPIO_NUM_NC) != ESP_OK)
     {
         return;
     }
@@ -160,7 +160,7 @@ void app_main(void)
 
             char msg[9];
             int32_t latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc;
-            if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 10*60) == ESP_OK)
+            if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 30) == ESP_OK)
             {
                 ESP_LOGI(TAG, "I am here: https://maps.google.com/?q=%3.7f,%3.7f; Height: %.3f; Horizontal Uncertainty: %.3f; Vertical Uncertainty: %.3f ",
                          ((float)latitudeX1e7) / 10000000,

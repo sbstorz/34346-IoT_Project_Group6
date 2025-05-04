@@ -65,7 +65,7 @@ static esp_err_t get_location(int32_t *latitudeX1e7,
 // The entry point: before this is called the system
 // clocks must have been started and the RTOS must be running;
 // we are in task space.
-esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num)
+esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t pwr_io_num)
 {
 
     // Initialise the APIs we will need
@@ -98,7 +98,7 @@ esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io
     // -1 if there is no such pin.
     uGnssAdd(U_GNSS_MODULE_TYPE_M9,
              U_GNSS_TRANSPORT_UART, transportHandle,
-             -1, true,
+             pwr_io_num | U_GNSS_PIN_INVERTED, true,
              &gnssHandle);
 
     // To get prints of the message exchange with the GNSS module

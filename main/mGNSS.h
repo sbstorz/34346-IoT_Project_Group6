@@ -6,7 +6,7 @@
 
 
 int test();
-esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num);
+esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t pwr_io_num);
 esp_err_t gnss_deinit(void);
 esp_err_t gnss_get_location(int32_t *latitudeX1e7,int32_t *longitudeX1e7,int32_t *hMSL,int32_t *hAcc,int32_t *vAcc, unsigned int timeout_s);
 esp_err_t gnss_sleep(void);
