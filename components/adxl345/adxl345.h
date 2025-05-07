@@ -7,10 +7,14 @@
 
 #ifndef MAIN_ADXL345_H_
 #define MAIN_ADXL345_H_
+#include <stdbool.h>
+#include "esp_err.h" // Include for esp_err_t
+
 /*=========================================================================
     I2C ADDRESS/BITS
     -----------------------------------------------------------------------*/
-#define ADXL345_DEFAULT_ADDRESS 0x53 ///< Assumes ALT address pin low
+// #define ADXL345_DEFAULT_ADDRESS 0x1D ///< Assumes ALT address pin low
+#define ADXL345_DEFAULT_ADDRESS 0x53
 /*=========================================================================*/
 
 /*=========================================================================
@@ -52,6 +56,30 @@
     REGISTERS
     -----------------------------------------------------------------------*/
 #define ADXL345_MG2G_MULTIPLIER (0.004) ///< 4mg per lsb
+/*=========================================================================*/
+
+/*=========================================================================*/
+/* BIT MASK DEFINITIONS FOR INTERRUPT REGISTERS                           */
+/*=========================================================================*/
+#define ADXL345_INT_ENABLE_ACTIVITY (1 << 4) ///< Activity interrupt enable bit
+#define ADXL345_INT_MAP_ACTIVITY (1 << 4)    ///< Activity interrupt map bit (0=INT1, 1=INT2)
+#define ADXL345_INT_SOURCE_ACTIVITY (1 << 4) ///< Activity interrupt source bit
+#define ADXL345_INT_ENABLE_INACTIVITY (1 << 3) ///< Inactivity interrupt enable bit
+#define ADXL345_INT_MAP_INACTIVITY (1 << 3)    ///< Inactivity interrupt map bit (0=INT1, 1=INT2)
+#define ADXL345_INT_SOURCE_INACTIVITY (1 << 3) ///< Inactivity interrupt source bit
+/*=========================================================================*/
+
+/*=========================================================================*/
+/* DEFINITIONS FOR ACT_INACT_CTL REGISTER                                 */
+/*=========================================================================*/
+#define ADXL345_ACT_ACDC (1 << 7) ///< AC/DC coupling for activity (0=DC, 1=AC)
+#define ADXL345_ACT_X_EN (1 << 6) ///< Enable X axis for activity detection
+#define ADXL345_ACT_Y_EN (1 << 5) ///< Enable Y axis for activity detection
+#define ADXL345_ACT_Z_EN (1 << 4) ///< Enable Z axis for activity detection
+#define ADXL345_INACT_ACDC (1 << 3) ///< AC/DC coupling for inactivity (0=DC, 1=AC)
+#define ADXL345_INACT_X_EN (1 << 2) ///< Enable X axis for inactivity detection
+#define ADXL345_INACT_Y_EN (1 << 1) ///< Enable Y axis for inactivity detection
+#define ADXL345_INACT_Z_EN (1 << 0) ///< Enable Z axis for inactivity detection
 /*=========================================================================*/
 
 #define I2C_MASTER_SCL_IO CONFIG_I2C_MASTER_SCL /*!< GPIO number used for I2C master clock */
@@ -98,6 +126,94 @@ typedef enum
     ADXL345_RANGE_2_G = 0b00   ///< +/- 2g (default value)
 } range_t;
 
-void adxl345_set_measure_mode(void);
+/**
+ * @brief Selects which physical interrupt pin to use (INT1 or INT2)
+*/
+typedef enum
+{
+    ADXL345_INT1_PIN = 0, ///< Map interrupts to INT1 pin
+    ADXL345_INT2_PIN = 1  ///< Map interrupts to INT2 pin
+} adxl345_int_pin_t;
+
+/**
+ * @brief Initialize I2C master communication for ADXL345
+ *
+ * @param sda GPIO pin for SDA
+ * @param scl GPIO pin for SCL
+ */
 void adxl345_i2c_master_init(int16_t sda, int16_t scl);
+
+/**
+ * @brief Set the ADXL345 into measurement mode.
+ * Also checks the device ID.
+ */
+void adxl345_set_measure_mode(void);
+
+/**
+ * @brief Configure the ADXL345 activity detection interrupt.
+ * Enables activity detection on all axes (DC-coupled), sets the threshold,
+ * enables the activity interrupt, and maps it to the specified pin.
+ *
+ * @param threshold The activity detection threshold (unsigned 8-bit value, scale factor 62.5 mg/LSB).
+ * @param int_pin The physical interrupt pin (INT1 or INT2) to map the interrupt to.
+ * @return esp_err_t ESP_OK on success, or an error code from the I2C communication.
+ */
+esp_err_t adxl345_config_activity_int(uint8_t threshold, adxl345_int_pin_t int_pin);
+
+/**
+ * @brief Reads the ADXL345 interrupt source register and checks for the activity interrupt flag.
+ * This function should be called after an interrupt signal is received from the ADXL345.
+ * It also sets an internal flag if activity was detected.
+ * NOTE: Reading the interrupt source register clears the interrupt flags on the ADXL345.
+ *
+ * @return true if the activity interrupt bit was set in the source register, false otherwise or on I2C error.
+ */
+bool adxl345_check_activity_interrupt_source(void);
+
+/**
+ * @brief Checks if motion has been detected since the last call to this function (with clear_flag = true).
+ *
+ * @param clear_flag If true, resets the internal motion detected flag after reading it.
+ * @return true if motion was detected, false otherwise.
+ */
+bool adxl345_has_motion_occurred(bool clear_flag);
+
+/**
+ * @brief Checks if inactivity has been detected by the ADXL345 interrupt.
+ *
+ * @param clear_flag If true, resets the internal inactivity detected flag after reading it.
+ * @return true if inactivity was detected, false otherwise.
+ */
+bool adxl345_is_inactive(bool clear_flag);
+
+/**
+ * @brief Configure the ADXL345 inactivity detection interrupt.
+ * Enables inactivity detection on all axes (DC-coupled), sets the threshold and time,
+ * enables the inactivity interrupt, and maps it to the specified pin.
+ *
+ * @param threshold The inactivity detection threshold (unsigned 8-bit value, scale factor 62.5 mg/LSB).
+ * @param time_s The inactivity time (in seconds) before triggering interrupt.
+ * @param int_pin The physical interrupt pin (INT1 or INT2) to map the interrupt to.
+ * @return esp_err_t ESP_OK on success, or an error code from the I2C communication.
+ */
+esp_err_t adxl345_config_inactivity_int(uint8_t threshold, uint8_t time_s, adxl345_int_pin_t int_pin);
+
+/**
+ * @brief Reads the ADXL345 interrupt source register and processes interrupt flags.
+ * This function handles both activity and inactivity interrupts.
+ * NOTE: Reading the interrupt source register clears the interrupt flags on the ADXL345.
+ *
+ * @return uint8_t The interrupt source register value.
+ */
+uint8_t adxl345_process_interrupts(void);
+
+/**
+ * @brief Reads a single byte from a specific register on the ADXL345.
+ *
+ * @param reg The register address to read from.
+ * @param value Pointer to store the read value.
+ * @return esp_err_t ESP_OK on success, or an error code from the I2C communication.
+ */
+esp_err_t adxl345_read_reg(uint8_t reg, uint8_t *value);
+
 #endif // MAIN_ADXL345_H_
