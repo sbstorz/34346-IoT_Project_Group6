@@ -1,301 +1,287 @@
+#include <stdbool.h>
 #include <string.h>
-#include <stdbool.h> // Include for bool type
 
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_log.h"
 // driver should be included in CMakeLists.txt
-#include "driver/i2c.h"
-
+// #include "driver/i2c.h" // Old driver
 #include "adxl345.h"
+#include "driver/gpio.h"        // For GPIO functions
+#include "driver/i2c_master.h"  // New I2C master driver
+// #include "driver/i2c.h" // Old driver
 
 #define TAG "ADXL345"
 
-// Flag to store motion detection status (volatile because it's accessed by ISR context indirectly)
-static volatile bool g_motion_detected_flag = false;
-static volatile bool g_inactivity_detected_flag = false;
+static i2c_master_dev_handle_t adxl345_dev_handle =
+    NULL;  // Handle for the ADXL345 I2C device
 
 /**
  * @brief Writes a single byte to a specific register on the ADXL345
  */
-static esp_err_t adxl345_write_reg(uint8_t reg, uint8_t value)
-{
+static esp_err_t adxl345_write_reg(uint8_t reg, uint8_t value) {
+    if (adxl345_dev_handle == NULL) {
+        ESP_LOGE(TAG, "ADXL345 device handle not initialized");
+        return ESP_FAIL;
+    }
     uint8_t write_buf[2] = {reg, value};
-    return i2c_master_write_to_device(I2C_MASTER_NUM, ADXL345_DEFAULT_ADDRESS, write_buf, sizeof(write_buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    return i2c_master_transmit(adxl345_dev_handle, write_buf, sizeof(write_buf),
+                               I2C_MASTER_TIMEOUT_MS);
 }
 
 /**
  * @brief Reads a single byte from a specific register on the ADXL345
  */
-esp_err_t adxl345_read_reg(uint8_t reg, uint8_t *value)
-{
-    return i2c_master_write_read_device(I2C_MASTER_NUM, ADXL345_DEFAULT_ADDRESS, &reg, 1, value, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+esp_err_t adxl345_read_reg(uint8_t reg, uint8_t *value) {
+    if (adxl345_dev_handle == NULL) {
+        ESP_LOGE(TAG, "ADXL345 device handle not initialized");
+        return ESP_FAIL;
+    }
+    return i2c_master_transmit_receive(adxl345_dev_handle, &reg, 1, value, 1,
+                                       I2C_MASTER_TIMEOUT_MS);
 }
 
-void adxl345_i2c_master_init(int16_t sda, int16_t scl)
-{
-    i2c_config_t i2c_config = {
-        .mode = I2C_MODE_MASTER,
+// Helper function to perform a read-modify-write operation on a register
+static esp_err_t adxl345_update_reg_bits(uint8_t reg, uint8_t bits_to_set,
+                                         uint8_t bits_to_clear) {
+    uint8_t current_value;
+    esp_err_t ret = adxl345_read_reg(reg, &current_value);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read register 0x%02x for update (err=0x%x)",
+                 reg, ret);
+        return ret;
+    }
+    uint8_t new_value = (current_value & ~bits_to_clear) | bits_to_set;
+    if (new_value != current_value) {  // Only write if value changed
+        ret = adxl345_write_reg(reg, new_value);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "Failed to write register 0x%02x during update (err=0x%x)",
+                     reg, ret);
+        }
+    } else {
+        // ESP_LOGD(TAG, "Register 0x%02x update: No change needed
+        // (value=0x%02x)", reg, current_value);
+    }
+    return ret;
+}
+
+// Reads and returns the interrupt source register, clearing interrupts on the
+// device. Returns the value read, or 0xFF on error (as 0x00 is a valid source
+// value).
+uint8_t adxl345_get_and_clear_int_source(
+    void) {  // Renamed and corrected implementation
+    uint8_t int_source_val = 0;
+    esp_err_t ret = adxl345_read_reg(ADXL345_REG_INT_SOURCE, &int_source_val);
+    if (ret == ESP_OK) {
+        return int_source_val;
+    } else {
+        ESP_LOGE(TAG, "Failed to read INT_SOURCE register. Error: 0x%x", ret);
+        return 0xFF;  // Return error indicator
+    }
+}
+
+void adxl345_i2c_master_init(int16_t sda, int16_t scl) {
+    if (adxl345_dev_handle != NULL) {
+        ESP_LOGW(TAG, "ADXL345 I2C already initialized.");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Initializing I2C master for ADXL345...");
+
+    i2c_master_bus_config_t i2c_mst_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_MASTER_NUM,  // ESP-IDF I2C port number (0 or 1)
         .sda_io_num = sda,
         .scl_io_num = scl,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ};
-    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &i2c_config));
-    // master mode only, no buffer RX/TX needed
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0));
+        .glitch_ignore_cnt = 7,  // Default from examples, can be tuned
+        .flags.enable_internal_pullup =
+            true,  // To enable internal pullups for SDA and SCL
+    };
+    i2c_master_bus_handle_t bus_handle;
+    esp_err_t ret = i2c_new_master_bus(&i2c_mst_bus_config, &bus_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create I2C master bus (err=0x%x)", ret);
+        return;
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = ADXL345_DEFAULT_ADDRESS,
+        .scl_speed_hz = I2C_MASTER_FREQ_HZ,
+    };
+
+    ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &adxl345_dev_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add ADXL345 device to I2C bus (err=0x%x)",
+                 ret);
+        // Clean up bus if device add fails
+        i2c_del_master_bus(bus_handle);
+        adxl345_dev_handle = NULL;
+        return;
+    }
+    ESP_LOGI(TAG, "ADXL345 I2C master and device initialized successfully.");
 }
 
-void adxl345_set_measure_mode()
-{
-    uint8_t buf[2];
+void adxl345_set_measure_mode() {
+    if (adxl345_dev_handle == NULL) {
+        ESP_LOGE(TAG,
+                 "ADXL345 device handle not initialized for set_measure_mode");
+        return;
+    }
+    uint8_t dev_id;
     esp_err_t ret;
-    // check device id
-    uint8_t ADXL345_DEVID[2];
-    ADXL345_DEVID[0] = ADXL345_REG_DEVID & 0xFF;
-    ADXL345_DEVID[1] = (ADXL345_REG_DEVID >> 8) & 0xFF;
-    ret = i2c_master_write_read_device(I2C_MASTER_NUM, ADXL345_DEFAULT_ADDRESS, &ADXL345_DEVID[0], 2, &buf[0], 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    if (ret == ESP_OK)
-    {
-        ESP_LOGI(TAG, "devid=%x", buf[0]);
+
+    // Check device id
+    ret = adxl345_read_reg(ADXL345_REG_DEVID, &dev_id);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "ADXL345 Device ID: 0x%02x", dev_id);
+        if (dev_id != 0xE5) {  // Expected device ID for ADXL345
+            ESP_LOGW(TAG, "Unexpected Device ID: 0x%02x (Expected 0xE5)",
+                     dev_id);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to read ADXL345 Device ID (err=0x%x)", ret);
+        // It might be problematic to continue if we can't read the device ID
     }
-    else
-    {
-        ESP_LOGE(TAG, "%s", "ESP_FAIL while reading devid");
-    }
-    // set ADXL345 to measure mode
-    buf[0] = ADXL345_REG_POWER_CTL;
-    // (8dec -> 0000 1000 binary) Bit D3 High for measuring enable
-    buf[1] = 0x08;
-    ret = i2c_master_write_to_device(I2C_MASTER_NUM, ADXL345_DEFAULT_ADDRESS, &buf[0], sizeof(buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    if (ret == ESP_OK)
-    {
-        ESP_LOGI(TAG, "%s", "ADXL345 set to measure mode");
-    }
-    else
-    {
-        ESP_LOGE(TAG, "%s", "ESP_FAIL while setting ADXL345 to measure mode");
+
+    // Set ADXL345 to measure mode
+    // Bit D3 High (0x08) in POWER_CTL register (0x2D) enables measurement
+    ret = adxl345_write_reg(ADXL345_REG_POWER_CTL, 0x08);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "ADXL345 set to measure mode");
+    } else {
+        ESP_LOGE(TAG, "Failed to set ADXL345 to measure mode (err=0x%x)", ret);
     }
 }
 
-esp_err_t adxl345_config_activity_int(uint8_t threshold, adxl345_int_pin_t int_pin)
-{
+// Refactored function
+esp_err_t adxl345_config_activity_int(uint8_t threshold,
+                                      adxl345_int_pin_t int_pin) {
     esp_err_t ret;
 
     // 1. Set Activity Threshold
     ret = adxl345_write_reg(ADXL345_REG_THRESH_ACT, threshold);
-    if (ret != ESP_OK)
-    {
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set activity threshold (err=0x%x)", ret);
         return ret;
     }
-    ESP_LOGI(TAG, "Activity threshold set to 0x%x (%d mg)", threshold, threshold * 63); // Approx 62.5 mg/LSB
+    ESP_LOGI(TAG, "Activity threshold set to 0x%x (%d mg)", threshold,
+             threshold * 63);
 
-    // 2. Configure Activity/Inactivity Control
-    //    - Activity: DC-coupled, X, Y, Z enabled
-    //    - Preserve inactivity settings.
-    uint8_t current_act_inact_ctl = 0;
-    ret = adxl345_read_reg(ADXL345_REG_ACT_INACT_CTL, &current_act_inact_ctl);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read current ACT_INACT_CTL register (err=0x%x)", ret);
-        return ret;
-    }
-    // Enable activity on X, Y, Z. Assumes DC-coupled (Bit 7 ACT_ACDC = 0, Bit 3 INACT_ACDC = 0, which is default or set by inactivity config)
-    uint8_t act_inact_ctl_val = current_act_inact_ctl | ADXL345_ACT_X_EN | ADXL345_ACT_Y_EN | ADXL345_ACT_Z_EN;
-    ret = adxl345_write_reg(ADXL345_REG_ACT_INACT_CTL, act_inact_ctl_val);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to set activity control (err=0x%x)", ret);
-        return ret;
-    }
-    ESP_LOGI(TAG, "Activity control set (DC-coupled, XYZ enabled)");
-
-    // 3. Map Activity Interrupt to INT1 or INT2
-    //    Preserve other interrupt mappings.
-    uint8_t current_int_map = 0;
-    ret = adxl345_read_reg(ADXL345_REG_INT_MAP, &current_int_map);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read current INT_MAP register (err=0x%x)", ret);
-        return ret;
-    }
-
-    uint8_t int_map_val = current_int_map;
+    // 2. Map Activity Interrupt to INT1 or INT2
+    uint8_t map_bits_to_set = 0;
+    uint8_t map_bits_to_clear = 0;
     if (int_pin == ADXL345_INT2_PIN) {
-        int_map_val |= ADXL345_INT_MAP_ACTIVITY;  // Route Activity to INT2
+        map_bits_to_set = ADXL345_INT_MAP_ACTIVITY;  // Route Activity to INT2
     } else {
-        int_map_val &= ~ADXL345_INT_MAP_ACTIVITY; // Route Activity to INT1
+        map_bits_to_clear =
+            ADXL345_INT_MAP_ACTIVITY;  // Route Activity to INT1 (clear bit)
     }
-    ret = adxl345_write_reg(ADXL345_REG_INT_MAP, int_map_val);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to set interrupt map (err=0x%x)", ret);
+    ret = adxl345_update_reg_bits(ADXL345_REG_INT_MAP, map_bits_to_set,
+                                  map_bits_to_clear);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set interrupt map for activity (err=0x%x)",
+                 ret);
         return ret;
     }
-    ESP_LOGI(TAG, "Activity interrupt mapped to INT%d", (int_pin == ADXL345_INT1_PIN) ? 1 : 2);
+    ESP_LOGI(TAG, "Activity interrupt mapped to INT%d",
+             (int_pin == ADXL345_INT1_PIN) ? 1 : 2);
 
-    // 4. Enable Activity Interrupt
-    //    Preserve other enabled interrupts.
-    uint8_t current_int_enable = 0;
-    ret = adxl345_read_reg(ADXL345_REG_INT_ENABLE, &current_int_enable);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read current INT_ENABLE register (err=0x%x)", ret);
-        return ret;
-    }
-    uint8_t int_enable_val = current_int_enable | ADXL345_INT_ENABLE_ACTIVITY;
-    ret = adxl345_write_reg(ADXL345_REG_INT_ENABLE, int_enable_val);
-    if (ret != ESP_OK)
-    {
+    // 3. Enable Activity Interrupt
+    ret = adxl345_update_reg_bits(ADXL345_REG_INT_ENABLE,
+                                  ADXL345_INT_ENABLE_ACTIVITY, 0);
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable activity interrupt (err=0x%x)", ret);
         return ret;
     }
-    ESP_LOGI(TAG, "Activity interrupt enabled");
+    ESP_LOGI(TAG, "Activity interrupt enabled in INT_ENABLE register");
+
+    // 4. Configure Activity Control (DC-coupled, XYZ enabled)
+    uint8_t act_ctl_bits_to_set =
+        ADXL345_ACT_X_EN | ADXL345_ACT_Y_EN | ADXL345_ACT_Z_EN;
+    uint8_t act_ctl_bits_to_clear = ADXL345_ACT_ACDC;  // Ensure DC coupling
+    ret = adxl345_update_reg_bits(ADXL345_REG_ACT_INACT_CTL,
+                                  act_ctl_bits_to_set, act_ctl_bits_to_clear);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Failed to set activity control in ACT_INACT_CTL (err=0x%x)",
+                 ret);
+        return ret;
+    }
+    ESP_LOGI(TAG,
+             "Activity control set in ACT_INACT_CTL (DC-coupled, XYZ enabled)");
 
     return ESP_OK;
 }
 
-esp_err_t adxl345_config_inactivity_int(uint8_t threshold, uint8_t time_s, adxl345_int_pin_t int_pin)
-{
+// Refactored function
+esp_err_t adxl345_config_inactivity_int(uint8_t threshold, uint8_t time_s,
+                                        adxl345_int_pin_t int_pin) {
     esp_err_t ret;
 
     // 1. Set Inactivity Threshold
     ret = adxl345_write_reg(ADXL345_REG_THRESH_INACT, threshold);
-    if (ret != ESP_OK)
-    {
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set inactivity threshold (err=0x%x)", ret);
         return ret;
     }
-    ESP_LOGI(TAG, "Inactivity threshold set to 0x%x (%d mg)", threshold, threshold * 63); // Approx 62.5 mg/LSB
+    ESP_LOGI(TAG, "Inactivity threshold set to 0x%x (%d mg)", threshold,
+             threshold * 63);
 
     // 2. Set Inactivity Time
     ret = adxl345_write_reg(ADXL345_REG_TIME_INACT, time_s);
-    if (ret != ESP_OK)
-    {
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set inactivity time (err=0x%x)", ret);
         return ret;
     }
     ESP_LOGI(TAG, "Inactivity time set to %d seconds", time_s);
 
-    // 3. Configure Activity/Inactivity Control to enable inactivity detection
-    // Read current value to preserve activity settings
-    uint8_t current_act_inact_ctl = 1;
-    ret = adxl345_read_reg(ADXL345_REG_ACT_INACT_CTL, &current_act_inact_ctl);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read current ACT_INACT_CTL register (err=0x%x)", ret);
-        return ret;
-    }
-    
-    // Set Inactivity settings (keeping current activity settings)
-    uint8_t act_inact_ctl_val = current_act_inact_ctl | 
-                               ADXL345_INACT_X_EN | ADXL345_INACT_Y_EN | ADXL345_INACT_Z_EN;
-    ret = adxl345_write_reg(ADXL345_REG_ACT_INACT_CTL, act_inact_ctl_val);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to set inactivity control (err=0x%x)", ret);
-        return ret;
-    }
-    ESP_LOGI(TAG, "Inactivity control set (DC-coupled, XYZ enabled)");
-
-    // 4. Map Inactivity Interrupt to INT1 or INT2
-    uint8_t current_int_map = 0;
-    ret = adxl345_read_reg(ADXL345_REG_INT_MAP, &current_int_map);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read current INT_MAP register (err=0x%x)", ret);
-        return ret;
-    }
-    
-    // Update INT_MAP with inactivity mapping while preserving other mappings
-    uint8_t int_map_val = current_int_map;
+    // 3. Map Inactivity Interrupt to INT1 or INT2
+    uint8_t map_bits_to_set = 0;
+    uint8_t map_bits_to_clear = 0;
     if (int_pin == ADXL345_INT2_PIN) {
-        int_map_val |= ADXL345_INT_MAP_INACTIVITY;  // Set bit for INT2
+        map_bits_to_set =
+            ADXL345_INT_MAP_INACTIVITY;  // Route Inactivity to INT2
     } else {
-        int_map_val &= ~ADXL345_INT_MAP_INACTIVITY; // Clear bit for INT1
+        map_bits_to_clear =
+            ADXL345_INT_MAP_INACTIVITY;  // Route Inactivity to INT1 (clear bit)
     }
-    
-    ret = adxl345_write_reg(ADXL345_REG_INT_MAP, int_map_val);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to set interrupt map (err=0x%x)", ret);
+    ret = adxl345_update_reg_bits(ADXL345_REG_INT_MAP, map_bits_to_set,
+                                  map_bits_to_clear);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set interrupt map for inactivity (err=0x%x)",
+                 ret);
         return ret;
     }
-    ESP_LOGI(TAG, "Inactivity interrupt mapped to INT%d", (int_pin == ADXL345_INT1_PIN) ? 1 : 2);
+    ESP_LOGI(TAG, "Inactivity interrupt mapped to INT%d",
+             (int_pin == ADXL345_INT1_PIN) ? 1 : 2);
 
-    // 5. Enable Inactivity Interrupt
-    uint8_t current_int_enable = 0;
-    ret = adxl345_read_reg(ADXL345_REG_INT_ENABLE, &current_int_enable);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read current INT_ENABLE register (err=0x%x)", ret);
-        return ret;
-    }
-    
-    // Update INT_ENABLE with inactivity bit while preserving other interrupts
-    uint8_t int_enable_val = current_int_enable | ADXL345_INT_ENABLE_INACTIVITY;
-    ret = adxl345_write_reg(ADXL345_REG_INT_ENABLE, int_enable_val);
-    if (ret != ESP_OK)
-    {
+    // 4. Enable Inactivity Interrupt
+    ret = adxl345_update_reg_bits(ADXL345_REG_INT_ENABLE,
+                                  ADXL345_INT_ENABLE_INACTIVITY, 0);
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable inactivity interrupt (err=0x%x)", ret);
         return ret;
     }
-    ESP_LOGI(TAG, "Inactivity interrupt enabled");
+    ESP_LOGI(TAG, "Inactivity interrupt enabled in INT_ENABLE register");
+
+    // 5. Configure Inactivity Control (DC-coupled, XYZ enabled)
+    uint8_t inact_ctl_bits_to_set =
+        ADXL345_INACT_X_EN | ADXL345_INACT_Y_EN | ADXL345_INACT_Z_EN;
+    uint8_t inact_ctl_bits_to_clear = ADXL345_INACT_ACDC;  // Ensure DC coupling
+    ret =
+        adxl345_update_reg_bits(ADXL345_REG_ACT_INACT_CTL,
+                                inact_ctl_bits_to_set, inact_ctl_bits_to_clear);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Failed to set inactivity control in ACT_INACT_CTL (err=0x%x)",
+                 ret);
+        return ret;
+    }
+    ESP_LOGI(
+        TAG,
+        "Inactivity control set in ACT_INACT_CTL (DC-coupled, XYZ enabled)");
 
     return ESP_OK;
-}
-
-uint8_t adxl345_process_interrupts(void)
-{
-    uint8_t int_source;
-    esp_err_t ret = adxl345_read_reg(ADXL345_REG_INT_SOURCE, &int_source);
-
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to read interrupt source (err=0x%x)", ret);
-        return 0; // Cannot confirm source if read failed
-    }
-
-    // Check for Activity interrupt
-    if (int_source & ADXL345_INT_SOURCE_ACTIVITY)
-    {
-        ESP_LOGI(TAG, "Activity interrupt detected (INT_SOURCE: 0x%x)", int_source);
-        g_motion_detected_flag = true;
-        g_inactivity_detected_flag = false;
-    }
-
-    // Check for Inactivity interrupt
-    if (int_source & ADXL345_INT_SOURCE_INACTIVITY)
-    {
-        ESP_LOGI(TAG, "Inactivity interrupt detected (INT_SOURCE: 0x%x)", int_source);
-        g_inactivity_detected_flag = true;
-    }
-
-    return int_source;
-}
-
-bool adxl345_check_activity_interrupt_source(void)
-{
-    return adxl345_process_interrupts() & ADXL345_INT_SOURCE_ACTIVITY;
-}
-
-bool adxl345_has_motion_occurred(bool clear_flag)
-{
-    bool current_status = g_motion_detected_flag;
-    if (clear_flag)
-    {
-        g_motion_detected_flag = false;
-    }
-    return current_status;
-}
-
-bool adxl345_is_inactive(bool clear_flag)
-{
-    bool current_status = g_inactivity_detected_flag;
-    if (clear_flag)
-    {
-        g_inactivity_detected_flag = false;
-    }
-    return current_status;
 }
