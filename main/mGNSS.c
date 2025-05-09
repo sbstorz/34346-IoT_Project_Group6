@@ -3,8 +3,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
-
 #include "esp_log.h"
+#include "esp_sleep.h"
 
 #define TAG "mGNSS"
 
@@ -96,22 +96,25 @@ esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io
     // Add a GNSS instance, giving it the UART handle and
     // the pin that enables power to the GNSS module; use
     // -1 if there is no such pin.
-    uGnssAdd(U_GNSS_MODULE_TYPE_M9,
+    uGnssAdd(U_GNSS_MODULE_TYPE_M8,
              U_GNSS_TRANSPORT_UART, transportHandle,
-             pwr_io_num | U_GNSS_PIN_INVERTED, true,
+             pwr_io_num | U_GNSS_PIN_INVERTED, false,
              &gnssHandle);
 
     // To get prints of the message exchange with the GNSS module
     uGnssSetUbxMessagePrint(gnssHandle, true);
 
-    int32_t bitmap = uGnssCfgGetProtocolOut(gnssHandle);
-    ESP_LOGI(TAG, "MSG RATE: %ld", bitmap);
-    if (bitmap & (1 << 1))
-    {
-        uGnssCfgSetProtocolOut(gnssHandle, U_GNSS_PROTOCOL_NMEA, false);
-        bitmap = uGnssCfgGetProtocolOut(gnssHandle);
-        ESP_LOGI(TAG, "MSG RATE: %ld", bitmap);
-    }
+
+    uGnssSetRetries(gnssHandle,5);
+
+    // int32_t bitmap = uGnssCfgGetProtocolOut(gnssHandle);
+    // ESP_LOGI(TAG, "MSG RATE: %ld", bitmap);
+    // if (bitmap & (1 << 1))
+    // {
+    //     uGnssCfgSetProtocolOut(gnssHandle, U_GNSS_PROTOCOL_NMEA, false);
+    //     bitmap = uGnssCfgGetProtocolOut(gnssHandle);
+    //     ESP_LOGI(TAG, "MSG RATE: %ld", bitmap);
+    // }
 
     return ESP_OK;
 }
@@ -130,8 +133,13 @@ esp_err_t gnss_get_location(int32_t *latitudeX1e7,
                             int32_t *hMSL,
                             int32_t *hAcc,
                             int32_t *vAcc,
-                            unsigned int timeout_s)
+                            unsigned int timeout_s,
+                            bool allowSleep)
 {
+    if (allowSleep)
+    {
+        esp_sleep_enable_timer_wakeup(10 * 1000 * 1000);
+    }
     int64_t start = esp_timer_get_time();
     int32_t best_latitudeX1e7, best_longitudeX1e7, best_hMSL, best_hAcc, best_vAcc;
     while (esp_timer_get_time() - start < timeout_s * 1000 * 1000)
@@ -139,7 +147,7 @@ esp_err_t gnss_get_location(int32_t *latitudeX1e7,
         if (get_location(&best_latitudeX1e7, &best_longitudeX1e7, &best_hMSL, &best_hAcc, &best_vAcc) == ESP_OK)
         {
 
-            for (size_t i = 0; i < 5; i++)
+            for (size_t i = 0; i < 20; i++)
             {
                 get_location(latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc);
                 if (*hAcc < best_hAcc)
@@ -150,7 +158,7 @@ esp_err_t gnss_get_location(int32_t *latitudeX1e7,
                     best_hAcc = *hAcc;
                     best_vAcc = *vAcc;
                 }
-                vTaskDelay(1000 / portTICK_PERIOD_MS);
+                vTaskDelay(500 / portTICK_PERIOD_MS);
             }
 
             *latitudeX1e7 = best_latitudeX1e7;
@@ -161,14 +169,21 @@ esp_err_t gnss_get_location(int32_t *latitudeX1e7,
 
             return ESP_OK;
         }
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        if (allowSleep)
+        {
+            esp_light_sleep_start();
+        }
+        else
+        {
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+        }
     }
 
-    *longitudeX1e7 = INT32_MAX;
-    *latitudeX1e7 = INT32_MAX;
-    *hMSL = INT32_MAX;
-    *hAcc = INT32_MAX;
-    *vAcc = INT32_MAX;
+    *longitudeX1e7 = 0;
+    *latitudeX1e7 = 0;
+    *hMSL = 0;
+    *hAcc = 0;
+    *vAcc = 0;
 
     return ESP_FAIL;
 }
@@ -176,7 +191,17 @@ esp_err_t gnss_get_location(int32_t *latitudeX1e7,
 esp_err_t gnss_sleep(void)
 {
     int32_t rc = uGnssPwrOffBackup(gnssHandle);
-    if (!rc)
+    if (rc != 0)
+    {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+esp_err_t gnss_wake(void)
+{
+    int32_t rc = uGnssPwrOn(gnssHandle);
+    if (rc != 0)
     {
         return ESP_FAIL;
     }

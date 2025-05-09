@@ -18,9 +18,10 @@ char *rxBuf;
  * @param dst allocated buffer of size `strlen(src) * 2 + 1` or bigger
  * @param src `\0` delimited string buffer
  */
-static void base16encode(char *dst, const char *src)
+static void base16encode(char *dst, const char *src, size_t src_size)
 {
-    for (size_t i = 0; i < strlen(src); i++)
+    size_t len = src_size ? src_size : strlen(src);
+    for (size_t i = 0; i < len; i++)
     {
         sprintf(&dst[i * 2], "%02x", src[i]);
     }
@@ -34,9 +35,9 @@ static void base16encode(char *dst, const char *src)
  * @param src `\0` delimited string buffer
  *
  */
-static void base16decode(char *dst, const char *src)
+static void base16decode(char *dst, const char *src, size_t src_size)
 {
-    size_t len = strlen(src);
+    size_t len = src_size ? src_size : strlen(src);
 
     for (size_t i = 0; i < len; i += 2)
     {
@@ -133,7 +134,7 @@ static received_t parse_response(const char *rsp)
  * @return esp error type
  *
  */
-static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, char **rx_data)
+static esp_err_t send_tx_cmd(char *tx_data, size_t tx_data_size, unsigned int tx_port, bool encode, char **rx_data)
 {
     ESP_LOGI(TAG, "mac tx");
     /* Send the tx command with unconfirmed mode*/
@@ -152,26 +153,27 @@ static esp_err_t send_tx_cmd(char *tx_data, unsigned int tx_port, bool encode, c
         return ESP_ERR_NOT_FINISHED;
     }
 
+    size_t len = tx_data_size ? tx_data_size : strlen(tx_data);
     if (encode)
     {
-        char *data_buf = (char *)malloc(strlen(tx_data) * 2 + 1); // Multiply with 2 since every char needs to be encoded as a HEX value with two chars.
-        base16encode(data_buf, tx_data);
+
+        char *data_buf = (char *)malloc(len * 2 + 1); // Multiply with 2 since every char needs to be encoded as a HEX value with two chars.
+        base16encode(data_buf, tx_data, len);
         if (uart_write_bytes(UART_PORT, data_buf, strlen(data_buf)) < strlen(data_buf))
         {
             return ESP_ERR_NOT_FINISHED;
         }
-        
+
         free(data_buf);
     }
     else
     {
-        if (uart_write_bytes(UART_PORT, tx_data, strlen(tx_data)) < strlen(tx_data))
+        if (uart_write_bytes(UART_PORT, tx_data, len) < len)
         {
             return ESP_ERR_NOT_FINISHED;
         }
     }
 
-    
     *rx_data = rn_send_raw_cmd("");
     return ESP_OK;
 }
@@ -407,7 +409,7 @@ esp_err_t rn_wake(void)
     return ESP_FAIL;
 }
 
-esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data, size_t rx_data_size, unsigned int *rx_port)
+esp_err_t rn_tx(char *tx_data, size_t tx_data_size, unsigned int tx_port, bool encode, char *rx_data, size_t rx_data_size, unsigned int *rx_port)
 {
     *rx_port = 0;
 
@@ -416,7 +418,7 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
     do
     {
         char *rc;
-        send_tx_cmd(tx_data, tx_port, encode, &rc);
+        send_tx_cmd(tx_data, tx_data_size, tx_port, encode, &rc);
         switch (parse_response(rc))
         {
         case ok:
@@ -481,7 +483,7 @@ esp_err_t rn_tx(char *tx_data, unsigned int tx_port, bool encode, char *rx_data,
             return 1;
         }
 
-        base16decode(rx_data, buf);
+        base16decode(rx_data, buf,0);
         free(buf);
 
         return ESP_OK;
