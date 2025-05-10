@@ -1,4 +1,3 @@
-#include "uI2C.h"
 #include "esp_log.h"
 #include "driver/i2c_master.h"
 

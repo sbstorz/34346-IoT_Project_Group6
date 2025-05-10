@@ -1,41 +1,37 @@
-#ifndef ADXL_SLEEP_MANAGER_H
-#define ADXL_SLEEP_MANAGER_H
+#ifndef MSLEEPMANAGER_H
+#define MSLEEPMANAGER_H
 
 #include <stdbool.h>
 #include <stdint.h>
 #include "driver/gpio.h"
-#include "esp_sleep.h"
 
 // ADXL345 Pin and Configuration Definitions
-#define ADXL345_INT1_GPIO GPIO_NUM_12  // Activity Interrupt
-#define ADXL345_INT2_GPIO GPIO_NUM_14  // Inactivity Interrupt
-#define ADXL_ACTIVITY_THRESHOLD_VALUE 80
-#define ADXL_INACTIVITY_THRESHOLD_VALUE 80
-#define ADXL_INACTIVITY_TIME_S 5
-
-// Fallback for ESP_EXT1_WAKEUP_ANY_HIGH if not defined by esp_sleep.h
-#ifndef ESP_EXT1_WAKEUP_ANY_HIGH
-#define ESP_EXT1_WAKEUP_ANY_HIGH 1
-#warning "ESP_EXT1_WAKEUP_ANY_HIGH was not defined by esp_sleep.h. Using fallback definition (1)."
-#endif
+// #define ADXL345_INT1_GPIO GPIO_NUM_12  // Activity Interrupt
+// #define ADXL345_INT2_GPIO GPIO_NUM_14  // Inactivity Interrupt
+// #define ADXL_ACTIVITY_THRESHOLD_VALUE 80
+// #define ADXL_INACTIVITY_THRESHOLD_VALUE 80
+// #define ADXL_INACTIVITY_TIME_S 5
 
 // Application-level wake event type
-typedef enum {
-    APP_WAKE_UNDEFINED_BOOT,    // Initial power-on or undefined wake reason
-    APP_WAKE_ADXL_ACTIVITY,     // Woke due to ADXL345 activity detection (INT1)
-    APP_WAKE_ADXL_INACTIVITY,   // Woke due to ADXL345 inactivity detection (INT2)
-    APP_WAKE_TIMER,             // Woke due to ESP32 timer
-    APP_WAKE_OTHER              // Woke due to other ESP32 sources or unknown EXT1 pin
+typedef enum
+{
+    APP_WAKE_UNDEFINED_BOOT,  // Initial power-on or undefined wake reason
+    APP_WAKE_ADXL_ACTIVITY,   // Woke due to ADXL345 activity detection (INT1)
+    APP_WAKE_ADXL_INACTIVITY, // Woke due to ADXL345 inactivity detection (INT2)
+    APP_WAKE_TIMER,           // Woke due to ESP32 timer
+    APP_WAKE_USER_BUTTON,     // Woke due to Euser button press
+    APP_WAKE_OTHER            // Woke due to other ESP32 sources or unknown EXT1 pin
 } app_wake_event_t;
 
 /**
  * @brief Initializes I2C communication and the ADXL345 sensor.
  *
  * This function should be called once at the beginning of app_main.
- * It assumes the underlying ADXL345 driver (adxl345.c) provides
- * adxl345_i2c_master_init().
+ * @param sda GPIO pin for SDA
+ * @param scl GPIO pin for SCL
+ * @return esp error code
  */
-void adxl_sm_init_i2c_and_adxl(void);
+esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl);
 
 /**
  * @brief Configures ADXL345 interrupts for activity and inactivity detection.
@@ -79,4 +75,12 @@ void adxl_sm_enter_dsleep_wait_activity(bool *rtc_is_adxl_inactive_ptr, bool als
  */
 void adxl_sm_enter_dsleep_wait_inactivity(bool *rtc_is_adxl_inactive_ptr, bool also_enable_timer, uint64_t timer_us);
 
-#endif // ADXL_SLEEP_MANAGER_H 
+
+app_wake_event_t sm_get_wakeup_cause(void);
+
+esp_err_t sm_deep_sleep(
+    gpio_num_t motion_int_pin,
+    gpio_num_t user_button_pin,
+    uint64_t timer_duration_us);
+
+#endif // MSLEEPMANAGER_H
