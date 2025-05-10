@@ -9,7 +9,7 @@
 // #include "uI2C.h"
 #include "adxl345.h"
 
-static const char *TAG = "ADXL_SM"; // Tag for logging
+static const char *TAG = "SM"; // Tag for logging
 
 // RTC data specific to this module's operation of determining sleep duration.
 // Note: The main rtc_is_adxl_inactive flag is in main.c and passed by pointer.
