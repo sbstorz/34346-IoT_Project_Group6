@@ -4,7 +4,7 @@
 
 #include "mSleepManager.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+// #include "driver/i2c.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
@@ -56,12 +56,13 @@ void app_main(void)
         ESP_LOGE(TAG, "FAILED to initialize the accelerometer");
         return;
     }
+    vTaskDelay(pdMS_TO_TICKS(500));
 
-    // if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23, GPIO_NUM_21) != ESP_OK)
-    // {
-    //     ESP_LOGE(TAG, "FAILED to initialize the GNSS Module");
-    //     return;
-    // }
+    if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23, GPIO_NUM_21) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "FAILED to initialize the GNSS Module");
+        return;
+    }
 
     /* TX on GPIO 5 since this is pulled up after reset and during sleep, reset could be removed since MCU and Lora module are always restarted together*/
     rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
@@ -72,10 +73,14 @@ void app_main(void)
         ESP_LOGI(TAG, "Initial Boot");
         state_flags |= (1 << 0);
 
+        rn_wake();
+
         if (rn_init_otaa() != ESP_OK)
         {
             return;
         }
+
+        rn_sleep();
     }
     // else
     // {
@@ -110,7 +115,7 @@ void app_main(void)
             {
             case APP_WAKE_UNDEFINED_BOOT:
                 ESP_LOGI(TAG, "Wakeup processing: Undefined/Initial Boot.");
-                state = light_auto; // Example: Initial action after boot
+                state = idle; // Example: Initial action after boot
                 break;
             case APP_WAKE_ADXL_ACTIVITY:
                 ESP_LOGI(TAG,
@@ -119,9 +124,8 @@ void app_main(void)
                 state = light_auto;
                 break;
             case APP_WAKE_ADXL_INACTIVITY:
-                ESP_LOGI(
-                    TAG,
-                    "Wakeup processing: ADXL Inactivity detected.");
+                ESP_LOGI(TAG,
+                         "Wakeup processing: ADXL Inactivity detected.");
                 // rtc_is_adxl_inactive is now true
                 state = idle;
                 break;
@@ -130,6 +134,12 @@ void app_main(void)
                 // rtc_is_adxl_inactive state is preserved by
                 // adxl_sm_determine_wake_state for timer wakes
                 state = idle; // Example: Periodic LoRa transmit
+                break;
+            case APP_WAKE_USER_BUTTON:
+                ESP_LOGI(TAG, "Wakeup processing: User Button.");
+                // rtc_is_adxl_inactive state is preserved by
+                // adxl_sm_determine_wake_state for timer wakes
+                state = led_on;
                 break;
             case APP_WAKE_OTHER:
             default:
@@ -150,7 +160,11 @@ void app_main(void)
                      "ADXL inactivity).");
             // rtc_is_adxl_inactive is already false from wake state
             // determination
-            state = dsleep;
+            state = idle;
+            break;
+
+        case led_on:
+            state = idle;
             break;
 
         case idle:
@@ -158,7 +172,7 @@ void app_main(void)
             // if led is on, turn off
             // if last transm. older than T hours,      --> goto: TXRX
             // else,                                    --> goto: dsleep
-            state = dsleep;
+            state = txrx;
             break;
 
         case lsleep:
@@ -326,5 +340,5 @@ void app_main(void)
     // enter deep sleep
     // gettimeofday(&sleep_enter_time, NULL);
     // esp_deep_sleep_start();
-    sm_deep_sleep(GPIO_NUM_12, GPIO_NUM_10, 30 * 1000 * 1000);
+    sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, 20 * 1000 * 1000);
 }

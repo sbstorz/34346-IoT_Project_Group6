@@ -35,8 +35,17 @@ esp_err_t adxl345_read_reg(uint8_t reg, uint8_t *value)
         ESP_LOGE(TAG, "ADXL345 device handle not initialized");
         return ESP_FAIL;
     }
-    return i2c_master_transmit_receive(adxl345_dev_handle, &reg, 1, value, 1,
-                                       I2C_MASTER_TIMEOUT_MS);
+
+    for (size_t i = 0; i < 3; i++)
+    {
+        if (i2c_master_transmit_receive(adxl345_dev_handle, &reg, 1, value, 1,
+                                        I2C_MASTER_TIMEOUT_MS) == ESP_OK)
+        {
+            return ESP_OK;
+        }
+    }
+
+    return ESP_FAIL;
 }
 
 // Helper function to perform a read-modify-write operation on a register
@@ -74,7 +83,7 @@ static esp_err_t adxl345_update_reg_bits(uint8_t reg, uint8_t bits_to_set,
 // device. Returns the value read, or 0xFF on error (as 0x00 is a valid source
 // value).
 uint8_t adxl345_get_and_clear_int_source(void)
-{ // Renamed and corrected implementation
+{
     uint8_t int_source_val = 0;
     esp_err_t ret = adxl345_read_reg(ADXL345_REG_INT_SOURCE, &int_source_val);
     if (ret == ESP_OK)
@@ -91,7 +100,20 @@ uint8_t adxl345_get_and_clear_int_source(void)
 esp_err_t adxl345_init(const adxl_device_config_t *config)
 {
     _config = *config;
-    return adxl345_i2c_master_init(config->sda_pin, config->scl_pin);
+    esp_err_t rc = adxl345_i2c_master_init(config->sda_pin, config->scl_pin);
+    if (rc != ESP_OK)
+    {
+        return rc;
+    }
+
+    // Make sure measurement mode is enabled, also serves to check if we can communicate
+    rc = adxl345_set_measure_mode();
+    if (rc != ESP_OK)
+    {
+        return rc;
+    }
+
+    return ESP_OK;
 }
 
 esp_err_t adxl345_i2c_master_init(gpio_num_t sda, gpio_num_t scl)
@@ -135,20 +157,21 @@ esp_err_t adxl345_i2c_master_init(gpio_num_t sda, gpio_num_t scl)
         // Clean up bus if device add fails
         i2c_del_master_bus(bus_handle);
         adxl345_dev_handle = NULL;
-        return ESP_FAIL;;
+        return ESP_FAIL;
+        ;
     }
     ESP_LOGI(TAG, "ADXL345 I2C master and device initialized successfully.");
 
     return ESP_OK;
 }
 
-void adxl345_set_measure_mode()
+esp_err_t adxl345_set_measure_mode()
 {
     if (adxl345_dev_handle == NULL)
     {
         ESP_LOGE(TAG,
                  "ADXL345 device handle not initialized for set_measure_mode");
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
     uint8_t dev_id;
     esp_err_t ret;
@@ -167,6 +190,7 @@ void adxl345_set_measure_mode()
     else
     {
         ESP_LOGE(TAG, "Failed to read ADXL345 Device ID (err=0x%x)", ret);
+        return ESP_FAIL;
         // It might be problematic to continue if we can't read the device ID
     }
 
@@ -180,7 +204,10 @@ void adxl345_set_measure_mode()
     else
     {
         ESP_LOGE(TAG, "Failed to set ADXL345 to measure mode (err=0x%x)", ret);
+        return ESP_FAIL;
     }
+
+    return ESP_OK;
 }
 
 // Refactored function

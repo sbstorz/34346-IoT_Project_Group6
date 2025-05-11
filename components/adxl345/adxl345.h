@@ -181,7 +181,7 @@ esp_err_t adxl345_i2c_master_init(gpio_num_t sda, gpio_num_t scl);
  * @brief Set the ADXL345 into measurement mode.
  * Also checks the device ID.
  */
-void adxl345_set_measure_mode(void);
+esp_err_t adxl345_set_measure_mode(void);
 
 /**
  * @brief Configure the ADXL345 activity detection interrupt.

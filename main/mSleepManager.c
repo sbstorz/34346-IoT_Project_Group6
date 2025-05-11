@@ -16,17 +16,19 @@ static const char *TAG = "SM"; // Tag for logging
 static RTC_DATA_ATTR struct timeval sleep_enter_time;
 static RTC_DATA_ATTR int sm_boot_count = 0;
 
-static gpio_num_t _adxl_int1_pin = GPIO_NUM_NC;
-static gpio_num_t _usr_button_pin = GPIO_NUM_NC;
+// RTC memory could be avoided by using defines
+static RTC_DATA_ATTR gpio_num_t _adxl_int1_pin = GPIO_NUM_NC;
+static RTC_DATA_ATTR gpio_num_t _usr_button_pin = GPIO_NUM_NC;
 
 // --- I2C and ADXL345 Initialization ---
-esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl) {
-        adxl_device_config_t adxl_config ={
+esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
+{
+    adxl_device_config_t adxl_config = {
         .activity_int_pin = ADXL345_INT1_PIN,
         .inactivity_int_pin = ADXL345_INT1_PIN,
-        .activity_threshold = 80,
-        .inactivity_threshold = 80,
-        .inactivity_time_s = 5,
+        .activity_threshold = 40,
+        .inactivity_threshold = 40,
+        .inactivity_time_s = 30, /* TODO: Adjust*/
         .sda_pin = sda,
         .scl_pin = scl,
     };
@@ -45,7 +47,7 @@ esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl) {
 //     ESP_ERROR_CHECK(adxl345_config_inactivity_int(
 //         ADXL_INACTIVITY_THRESHOLD_VALUE, ADXL_INACTIVITY_TIME_S,
 //         ADXL345_INT2_PIN));
-// 
+//
 //     uint8_t temp_int_source =
 //         adxl345_get_and_clear_int_source();  // From ADXL345 driver
 //     ESP_LOGI(TAG,
@@ -266,6 +268,10 @@ app_wake_event_t sm_get_wakeup_cause(void)
             ESP_LOGW(TAG,
                      "Woke: User Button. Sleep time: %ld ms",
                      sleep_time_ms);
+                     
+            adxl345_enable_inactivity_int();
+            adxl345_disable_activity_int();
+            adxl345_get_and_clear_int_source();
             app_event = APP_WAKE_USER_BUTTON;
         }
         else
@@ -338,6 +344,10 @@ esp_err_t sm_deep_sleep(
     {
         esp_sleep_enable_timer_wakeup(timer_duration_us);
     }
+
+    ESP_LOGI(TAG, "Device Sleepy: Going to sleep waking on EXT1 on Accel. Interrupt on GPIO %d, and "
+                  "User button on GPIO %d. And timer in %lld s",
+             motion_int_pin, user_button_pin, timer_duration_us / 1000000);
 
     gettimeofday(&sleep_enter_time, NULL); // Record time before sleep
     esp_deep_sleep_start();
