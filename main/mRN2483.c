@@ -225,7 +225,7 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
     memset(rxBuf, 0, RX_BUF_SIZE);
-    uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
+    // uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
 
     // uart_flush(UART_PORT);
 
@@ -295,10 +295,8 @@ esp_err_t rn_init_otaa(void)
         return ESP_FAIL;
     }
 
-    int i = 0;
-    do
+    for (size_t i = 0; i < retry_cnt; i++)
     {
-        i++;
         ESP_LOGI(TAG, "mac join");
         rc = rn_send_raw_cmd("mac join otaa");
         if (rc == NULL || strcmp(rc, "ok") != 0)
@@ -314,12 +312,35 @@ esp_err_t rn_init_otaa(void)
 
         rxBuf[n] = 0;
 
-    } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
-
-    if (i >= retry_cnt)
-    {
-        return ESP_FAIL;
+        if(strcmp(rxBuf, "accepted") == 0){
+            break;;
+        }
     }
+    
+    // do
+    // {
+    //     i++;
+    //     ESP_LOGI(TAG, "mac join");
+    //     rc = rn_send_raw_cmd("mac join otaa");
+    //     if (rc == NULL || strcmp(rc, "ok") != 0)
+    //     {
+    //         return ESP_FAIL;
+    //     }
+
+    //     int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 20000);
+    //     if (n <= 0)
+    //     {
+    //         return ESP_FAIL;
+    //     }
+
+    //     rxBuf[n] = 0;
+
+    // } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
+
+    // if (i >= retry_cnt)
+    // {
+    //     return ESP_FAIL;
+    // }
 
     return ESP_OK;
 }

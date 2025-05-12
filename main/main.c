@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "mRN2483.h"
 #include "mGNSS.h"
+#include "mDigitalIO.h"
 
 #define TAG "Main"
 #define TX_BUF_SIZE 3 * 4 + 1
@@ -48,15 +49,17 @@ void app_main(void)
 {
     state_t state = wakeup;
     bool stop = 0;
+    unsigned int dsleep_time_s = 60;
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+gpio_deep_sleep_hold_dis();
+    // gpio_hold_dis(GPIO_NUM_2);
+    led_init(GPIO_NUM_13, state_flags & (1 << 3));
 
     if (sm_init_adxl(GPIO_NUM_19, GPIO_NUM_18) != ESP_OK)
     {
         ESP_LOGE(TAG, "FAILED to initialize the accelerometer");
         return;
     }
-    vTaskDelay(pdMS_TO_TICKS(500));
 
     if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23, GPIO_NUM_21) != ESP_OK)
     {
@@ -103,6 +106,8 @@ void app_main(void)
     //     false); if (rn_wake() != ESP_OK) { /* Handle error */ }
     // }
 
+    // gpio_dump_io_configuration(stdout, SOC_GPIO_VALID_GPIO_MASK);
+
     while (!stop)
     {
 
@@ -120,7 +125,6 @@ void app_main(void)
             case APP_WAKE_ADXL_ACTIVITY:
                 ESP_LOGI(TAG,
                          "Wakeup processing: ADXL Activity detected.");
-                // rtc_is_adxl_inactive is now false
                 state = light_auto;
                 break;
             case APP_WAKE_ADXL_INACTIVITY:
@@ -131,15 +135,26 @@ void app_main(void)
                 break;
             case APP_WAKE_TIMER:
                 ESP_LOGI(TAG, "Wakeup processing: Timer.");
-                // rtc_is_adxl_inactive state is preserved by
-                // adxl_sm_determine_wake_state for timer wakes
-                state = idle; // Example: Periodic LoRa transmit
+                if (state_flags & (1 << 3))
+                {
+                    state = led_on;
+                }
+                else
+                {
+                    state = idle;
+                }
                 break;
             case APP_WAKE_USER_BUTTON:
                 ESP_LOGI(TAG, "Wakeup processing: User Button.");
-                // rtc_is_adxl_inactive state is preserved by
-                // adxl_sm_determine_wake_state for timer wakes
-                state = led_on;
+                /* If LED is on, turn it off, else turn it on*/
+                if (state_flags & (1 << 3))
+                {
+                    state = idle;
+                }
+                else
+                {
+                    state = led_on;
+                }
                 break;
             case APP_WAKE_OTHER:
             default:
@@ -151,20 +166,30 @@ void app_main(void)
             break; // Break from case wakeup
         }
 
-        case light_auto: // Example: Motion detected, turn on light
-                         // (simulated)
-            ESP_LOGI(TAG, "State: light_auto (ADXL was active)");
-            vTaskDelay(pdMS_TO_TICKS(1000)); // Simulate light automation
-            ESP_LOGI(TAG,
-                     "light_auto finished, preparing for dsleep (wait for "
-                     "ADXL inactivity).");
-            // rtc_is_adxl_inactive is already false from wake state
-            // determination
-            state = idle;
+        case light_auto:
+            ESP_LOGI(TAG, "State: light_auto");
+            // measure brightness outside
+
+            state = led_on;
             break;
 
         case led_on:
-            state = idle;
+            ESP_LOGI(TAG, "State: led_on");
+            // Measure Battery Level
+            bool battery_low = false;
+            if (!battery_low)
+            {
+                ESP_LOGI(TAG, "Turn LED: ON");
+                led_state_on();
+                state_flags |= (1 << 3);
+                dsleep_time_s = 5;
+                stop = 1;
+            }
+            else
+            {
+                state = led_blink;
+            }
+
             break;
 
         case idle:
@@ -172,6 +197,10 @@ void app_main(void)
             // if led is on, turn off
             // if last transm. older than T hours,      --> goto: TXRX
             // else,                                    --> goto: dsleep
+            ESP_LOGI(TAG, "State: idle");
+            ESP_LOGI(TAG, "Turn LED: OFF");
+            led_state_off();
+            state_flags &= ~(1 << 3);
             state = txrx;
             break;
 
@@ -197,6 +226,8 @@ void app_main(void)
             // if RX contains new stolen,
             // send battery + location
             // reconfigure wakeups
+
+            ESP_LOGI(TAG, "State: txrx");
 
             /* not stolen:  [FLG]               */
             /* stolen:      [LAT][LAT][LAT][LAT][LON][LON][LON][LON][HAC][HAC][HAC][HAC][FLG]*/
@@ -224,10 +255,13 @@ void app_main(void)
 
                     /* Check flags in buffer
                      * if STOLEN flag is raised, save it in state flags
-                     * if not STOLEN clear the HADFIX flag and STOLEN flag */
+                     * if not STOLEN clear the HADFIX flag and STOLEN flag 
+                     * HERE: All calls for reconfiguration to go to stolen mode*/
                     if (rx_data[0] & (1 << 0))
                     {
                         state_flags |= (1 << 1);
+
+                        sm_enable_adxl_wakeups(WAKE_NONE);
                     }
                     else
                     {
@@ -309,8 +343,11 @@ void app_main(void)
                         }
                         else
                         {
+                            /* Configure here to go back to normal operation */
                             state_flags &= ~(1 << 1);
                             state_flags &= ~(1 << 2);
+
+                            sm_enable_adxl_wakeups(WAKE_ACTIVITY);
                         }
                     }
                 }
@@ -324,6 +361,7 @@ void app_main(void)
             // const int wakeup_time_sec = 10;
             // ESP_LOGI(TAG, "Enabling timer wakeup, %ds\n", wakeup_time_sec);
             // ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(wakeup_time_sec * 1000000));
+            state = wakeup;
             stop = 1;
             break;
         default:
@@ -337,8 +375,8 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
-    // enter deep sleep
-    // gettimeofday(&sleep_enter_time, NULL);
-    // esp_deep_sleep_start();
-    sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, 20 * 1000 * 1000);
+
+    // gpio_deep_sleep_hold_en();
+    gpio_hold_en(GPIO_NUM_13);
+    sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, dsleep_time_s * 1000 * 1000);
 }

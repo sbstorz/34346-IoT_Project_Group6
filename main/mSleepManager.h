@@ -23,6 +23,14 @@ typedef enum
     APP_WAKE_OTHER            // Woke due to other ESP32 sources or unknown EXT1 pin
 } app_wake_event_t;
 
+// ADXL Motion wake-up
+typedef enum
+{
+    WAKE_NONE = 0x00,
+    WAKE_ACTIVITY = 0x01,   // Wake on activity
+    WAKE_INACTIVITY = 0x02, // Wake on Inactivity
+} adxl_wake_source_t;
+
 /**
  * @brief Initializes I2C communication and the ADXL345 sensor.
  *
@@ -75,12 +83,13 @@ void adxl_sm_enter_dsleep_wait_activity(bool *rtc_is_adxl_inactive_ptr, bool als
  */
 void adxl_sm_enter_dsleep_wait_inactivity(bool *rtc_is_adxl_inactive_ptr, bool also_enable_timer, uint64_t timer_us);
 
-
 app_wake_event_t sm_get_wakeup_cause(void);
 
 esp_err_t sm_deep_sleep(
     gpio_num_t motion_int_pin,
     gpio_num_t user_button_pin,
     uint64_t timer_duration_us);
+
+esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source);
 
 #endif // MSLEEPMANAGER_H

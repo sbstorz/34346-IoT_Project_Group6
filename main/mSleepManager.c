@@ -247,9 +247,10 @@ app_wake_event_t sm_get_wakeup_cause(void)
                          "Woke: ADXL INT (INT1). Source: Inactivity. Sleep time: %ld ms",
                          sleep_time_ms);
 
-                adxl345_enable_activity_int();
-                adxl345_disable_inactivity_int();
-                adxl345_get_and_clear_int_source();
+                sm_enable_adxl_wakeups(WAKE_ACTIVITY);
+                // adxl345_enable_activity_int();
+                // adxl345_disable_inactivity_int();
+                // adxl345_get_and_clear_int_source();
                 app_event = APP_WAKE_ADXL_INACTIVITY;
             }
             else if (int_src & ADXL345_INT_SOURCE_ACTIVITY)
@@ -257,9 +258,11 @@ app_wake_event_t sm_get_wakeup_cause(void)
                 ESP_LOGI(TAG,
                          "Woke: ADXL INT (INT1). Source: Activity. Sleep time: %ld ms",
                          sleep_time_ms);
-                adxl345_enable_inactivity_int();
-                adxl345_disable_activity_int();
-                adxl345_get_and_clear_int_source();
+
+                sm_enable_adxl_wakeups(WAKE_INACTIVITY);
+                // adxl345_enable_inactivity_int();
+                // adxl345_disable_activity_int();
+                // adxl345_get_and_clear_int_source();
                 app_event = APP_WAKE_ADXL_ACTIVITY;
             }
         }
@@ -268,10 +271,11 @@ app_wake_event_t sm_get_wakeup_cause(void)
             ESP_LOGW(TAG,
                      "Woke: User Button. Sleep time: %ld ms",
                      sleep_time_ms);
-                     
-            adxl345_enable_inactivity_int();
-            adxl345_disable_activity_int();
-            adxl345_get_and_clear_int_source();
+
+            sm_enable_adxl_wakeups(WAKE_INACTIVITY);
+            // adxl345_enable_inactivity_int();
+            // adxl345_disable_activity_int();
+            // adxl345_get_and_clear_int_source();
             app_event = APP_WAKE_USER_BUTTON;
         }
         else
@@ -294,9 +298,11 @@ app_wake_event_t sm_get_wakeup_cause(void)
     case ESP_SLEEP_WAKEUP_UNDEFINED:
         ESP_LOGI(TAG,
                  "Woke: Initial boot/Undefined. ADXL configure wake-up on: ACTIVITY");
-        adxl345_enable_activity_int();
-        adxl345_disable_inactivity_int();
-        adxl345_get_and_clear_int_source();
+
+        sm_enable_adxl_wakeups(WAKE_ACTIVITY);
+        // adxl345_enable_activity_int();
+        // adxl345_disable_inactivity_int();
+        // adxl345_get_and_clear_int_source();
         app_event = APP_WAKE_UNDEFINED_BOOT;
         break;
     default: // Other specific ESP32 wake causes (Touch, UART, etc.)
@@ -351,4 +357,33 @@ esp_err_t sm_deep_sleep(
 
     gettimeofday(&sleep_enter_time, NULL); // Record time before sleep
     esp_deep_sleep_start();
+}
+
+esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source)
+{
+    esp_err_t rc = ESP_FAIL;
+    if (source & BIT(0))
+    {
+        rc = adxl345_enable_activity_int();
+    }
+    else
+    {
+        rc = adxl345_disable_activity_int();
+    }
+
+    if (rc != ESP_OK)
+    {
+        return rc;
+    }
+    source = source >> 1;
+    if (source & BIT(0))
+    {
+        rc = adxl345_enable_inactivity_int();
+    }
+    else
+    {
+        rc = adxl345_disable_inactivity_int();
+    }
+    adxl345_get_and_clear_int_source();
+    return ESP_OK;
 }
