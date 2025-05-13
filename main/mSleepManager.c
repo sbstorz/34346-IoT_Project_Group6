@@ -230,6 +230,8 @@ app_wake_event_t sm_get_wakeup_cause(void)
         sleep_time_ms =
             (now.tv_sec - sleep_enter_time.tv_sec) * 1000L +
             (now.tv_usec - sleep_enter_time.tv_usec) / 1000L;
+
+            ESP_LOGI(TAG,"Time in sleep: %.3f s",sleep_time_ms*1.0/1000);
     }
 
     switch (cause)
@@ -326,25 +328,27 @@ esp_err_t sm_deep_sleep(
     _adxl_int1_pin = motion_int_pin;
     _usr_button_pin = user_button_pin;
 
-    // uint8_t clear_int_source = adxl345_get_and_clear_int_source();
-    // ESP_LOGI(TAG,
-    //          "Cleared ADXL345 INT_SOURCE (0x%02x) before deep sleep for %s.",
-    //          clear_int_source, wake_event_name);
+    uint64_t ext_wakeup_pin_mask = 0x00;
 
-    // ESP_ERROR_CHECK(rtc_gpio_init(wakeup_gpio));
-    // ESP_ERROR_CHECK(
-    // rtc_gpio_set_direction(wakeup_gpio, RTC_GPIO_MODE_INPUT_ONLY));
-    // ESP_ERROR_CHECK(
-    // rtc_gpio_pulldown_en(wakeup_gpio)); // ADXL345 INT pins are active high
-    rtc_gpio_pullup_dis(motion_int_pin);
-    rtc_gpio_pulldown_en(motion_int_pin);
-    rtc_gpio_pullup_dis(user_button_pin);
-    rtc_gpio_pulldown_en(user_button_pin);
-    // ESP_ERROR_CHECK(rtc_gpio_hold_dis(wakeup_gpio));
+    if (motion_int_pin != GPIO_NUM_NC)
+    {
+        rtc_gpio_pullup_dis(motion_int_pin);
+        rtc_gpio_pulldown_en(motion_int_pin);
+        ext_wakeup_pin_mask |= (1ULL << motion_int_pin);
+    }
+    if (user_button_pin != GPIO_NUM_NC)
+    {
+        rtc_gpio_pullup_dis(user_button_pin);
+        rtc_gpio_pulldown_en(user_button_pin);
 
-    const uint64_t ext_wakeup_pin_mask = (1ULL << motion_int_pin) | (1ULL << user_button_pin);
-    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(ext_wakeup_pin_mask,
-                                                 ESP_EXT1_WAKEUP_ANY_HIGH));
+        ext_wakeup_pin_mask |= (1ULL << user_button_pin);
+    }
+
+    if (ext_wakeup_pin_mask)
+    {
+        esp_sleep_enable_ext1_wakeup(ext_wakeup_pin_mask,
+                                     ESP_EXT1_WAKEUP_ANY_HIGH);
+    }
 
     if (timer_duration_us > 0)
     {

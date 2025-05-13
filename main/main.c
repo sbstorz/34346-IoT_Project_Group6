@@ -51,7 +51,6 @@ void app_main(void)
     bool stop = 0;
     unsigned int dsleep_time_s = 60;
 
-gpio_deep_sleep_hold_dis();
     // gpio_hold_dis(GPIO_NUM_2);
     led_init(GPIO_NUM_13, state_flags & (1 << 3));
 
@@ -76,12 +75,12 @@ gpio_deep_sleep_hold_dis();
         ESP_LOGI(TAG, "Initial Boot");
         state_flags |= (1 << 0);
 
-        rn_wake();
+        // rn_wake();
 
-        if (rn_init_otaa() != ESP_OK)
-        {
-            return;
-        }
+        // if (rn_init_otaa() != ESP_OK)
+        // {
+        //     return;
+        // }
 
         rn_sleep();
     }
@@ -378,5 +377,10 @@ gpio_deep_sleep_hold_dis();
 
     // gpio_deep_sleep_hold_en();
     gpio_hold_en(GPIO_NUM_13);
-    sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, dsleep_time_s * 1000 * 1000);
+    if (state_flags & (1 << 1)){
+        sm_deep_sleep(GPIO_NUM_NC, GPIO_NUM_NC, dsleep_time_s * 1000 * 1000);;
+    }else{
+        sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, dsleep_time_s * 1000 * 1000);
+    }
+    
 }
