@@ -3,22 +3,70 @@
 #include <sys/time.h> // For gettimeofday
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
+
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 #include "esp_log.h"
-// #include "uI2C.h"
 #include "adxl345.h"
+#include "mRN2483.h"
+
+#define LORA_FAIL_BIT BIT0
+#define LORA_TX_READY_BIT BIT1
+#define LORA_RX_READY_BIT BIT2
+#define TX_BUF_SIZE 3 * 4 + 1
 
 static const char *TAG = "SM"; // Tag for logging
+
+static EventGroupHandle_t s_lora_event_group = NULL;
+
+/* this is private to this file (static) */
+typedef struct
+{
+    char buffer[TX_BUF_SIZE]; /*!< pointer to heap where message is stored*/
+    size_t tx_length;      /*!< length of msg*/
+} lora_msg_t;
 
 // RTC data specific to this module's operation of determining sleep duration.
 // Note: The main rtc_is_adxl_inactive flag is in main.c and passed by pointer.
 static RTC_DATA_ATTR struct timeval sleep_enter_time;
-static RTC_DATA_ATTR int sm_boot_count = 0;
 
 // RTC memory could be avoided by using defines
 static RTC_DATA_ATTR gpio_num_t _adxl_int1_pin = GPIO_NUM_NC;
 static RTC_DATA_ATTR gpio_num_t _usr_button_pin = GPIO_NUM_NC;
+
+static void rn_tx_task(void *params)
+{
+    lora_msg_t *msg = (lora_msg_t *)params;
+
+    ESP_LOG_BUFFER_HEXDUMP(TAG,msg->buffer,TX_BUF_SIZE,ESP_LOG_INFO);
+
+    unsigned int port = 0;
+    char rx_data[10];
+    /* Send Uplink data */
+    if (rn_wake() == ESP_OK)
+    {
+        if (rn_tx(msg->buffer, msg->tx_length, 1, true, rx_data, 10, &port) != ESP_OK)
+        {
+            xEventGroupSetBits(s_lora_event_group, LORA_FAIL_BIT);
+        }
+    }
+    else
+    {
+        xEventGroupSetBits(s_lora_event_group, LORA_FAIL_BIT);
+    }
+    if (port > 0)
+    {
+        ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
+        ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
+        xEventGroupSetBits(s_lora_event_group, LORA_RX_READY_BIT);
+    }
+    xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+
+    free(msg);
+
+    vTaskDelete(NULL);
+}
 
 // --- I2C and ADXL345 Initialization ---
 esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
@@ -35,189 +83,8 @@ esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
     return adxl345_init(&adxl_config);
 }
 
-// --- ADXL345 Interrupt Setup ---
-// void adxl_sm_setup_interrupts(void) {
-//     ESP_LOGI(TAG,
-//              "Setting up ADXL345 Activity/Inactivity interrupts...");
-//     adxl345_set_measure_mode();  // From ADXL345 driver
-//     // Assumes ADXL345_INT1_PIN and ADXL345_INT2_PIN are defined in adxl345.h
-//     // for the driver
-//     ESP_ERROR_CHECK(adxl345_config_activity_int(ADXL_ACTIVITY_THRESHOLD_VALUE,
-//                                                 ADXL345_INT1_PIN));
-//     ESP_ERROR_CHECK(adxl345_config_inactivity_int(
-//         ADXL_INACTIVITY_THRESHOLD_VALUE, ADXL_INACTIVITY_TIME_S,
-//         ADXL345_INT2_PIN));
-//
-//     uint8_t temp_int_source =
-//         adxl345_get_and_clear_int_source();  // From ADXL345 driver
-//     ESP_LOGI(TAG,
-//              "Cleared ADXL345 INT_SOURCE (0x%02x) after ADXL345 setup.",
-//              temp_int_source);
-// }
-
-// --- Deep Sleep Logic (Internal Helper) ---
-// static void _configure_rtc_gpio_and_enter_deep_sleep(
-//     gpio_num_t wakeup_gpio,
-//     gpio_num_t other_gpio,
-//     const char *wake_event_name,
-//     bool enable_timer_too,
-//     uint64_t timer_duration_us)
-// {
-//     ESP_LOGI(TAG, "Configuring deep sleep (wake on GPIO%d - %s)...",
-//              wakeup_gpio, wake_event_name);
-
-//     uint8_t clear_int_source = adxl345_get_and_clear_int_source();
-//     ESP_LOGI(TAG,
-//              "Cleared ADXL345 INT_SOURCE (0x%02x) before deep sleep for %s.",
-//              clear_int_source, wake_event_name);
-
-//     ESP_ERROR_CHECK(rtc_gpio_init(wakeup_gpio));
-//     ESP_ERROR_CHECK(
-//         rtc_gpio_set_direction(wakeup_gpio, RTC_GPIO_MODE_INPUT_ONLY));
-//     ESP_ERROR_CHECK(
-//         rtc_gpio_pulldown_en(wakeup_gpio)); // ADXL345 INT pins are active high
-//     ESP_ERROR_CHECK(rtc_gpio_pullup_dis(wakeup_gpio));
-//     ESP_ERROR_CHECK(rtc_gpio_hold_dis(wakeup_gpio));
-
-//     if (rtc_gpio_is_valid_gpio(other_gpio))
-//     {
-//         rtc_gpio_deinit(other_gpio);
-//     }
-
-//     const uint64_t ext_wakeup_pin_mask = (1ULL << wakeup_gpio);
-//     ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(ext_wakeup_pin_mask,
-//                                                  ESP_EXT1_WAKEUP_ANY_HIGH));
-
-//     if (enable_timer_too && timer_duration_us > 0)
-//     {
-//         ESP_LOGI(TAG, "Also enabling timer wakeup for %llu us.",
-//                  timer_duration_us);
-//         ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(timer_duration_us));
-//     }
-
-//     ESP_LOGI(TAG, "Entering deep sleep (wake on %s %s)...",
-//              wake_event_name,
-//              (enable_timer_too && timer_duration_us > 0) ? "or timer" : "");
-//     gettimeofday(&sleep_enter_time, NULL); // Record time before sleep
-//     esp_deep_sleep_start();
-// }
-
-// --- Public Deep Sleep Functions ---
-// void adxl_sm_enter_dsleep_wait_activity(bool *rtc_is_adxl_inactive_ptr,
-//                                         bool also_enable_timer,
-//                                         uint64_t timer_us)
-// {
-//     if (rtc_is_adxl_inactive_ptr)
-//         *rtc_is_adxl_inactive_ptr = true; // System state is now considered
-//                                           // inactive, waiting for activity
-//     _configure_rtc_gpio_and_enter_deep_sleep(ADXL345_INT1_GPIO,
-//                                              ADXL345_INT2_GPIO, "ADXL Activity",
-//                                              also_enable_timer, timer_us);
-// }
-
-// void adxl_sm_enter_dsleep_wait_inactivity(bool *rtc_is_adxl_inactive_ptr,
-//                                           bool also_enable_timer,
-//                                           uint64_t timer_us)
-// {
-//     if (rtc_is_adxl_inactive_ptr)
-//         *rtc_is_adxl_inactive_ptr = false; // System state is now considered
-//                                            // active, waiting for inactivity
-//     _configure_rtc_gpio_and_enter_deep_sleep(
-//         ADXL345_INT2_GPIO, ADXL345_INT1_GPIO, "ADXL Inactivity",
-//         also_enable_timer, timer_us);
-// }
-
-// --- Wake State Determination ---
-// app_wake_event_t adxl_sm_determine_wake_state(bool *rtc_is_adxl_inactive_ptr)
-// {
-//     sm_boot_count++;
-//     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-//     struct timeval now;
-//     gettimeofday(&now, NULL);
-//     long sleep_time_ms = 0;
-//     app_wake_event_t app_event = APP_WAKE_OTHER; // Default to other
-
-//     if (cause != ESP_SLEEP_WAKEUP_UNDEFINED)
-//     { // Only calculate sleep time if
-//       // not initial boot
-//         sleep_time_ms =
-//             (now.tv_sec - sleep_enter_time.tv_sec) * 1000L +
-//             (now.tv_usec - sleep_enter_time.tv_usec) / 1000L;
-//     }
-//
-//     switch (cause)
-//     {
-//     case ESP_SLEEP_WAKEUP_EXT1:
-//     {
-//         uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
-//         if (wakeup_pin_mask &
-//             (1ULL << ADXL345_INT1_GPIO))
-//         { // ACTIVITY detected
-//             ESP_LOGI(TAG,
-//                      "Woke: ADXL ACTIVITY (INT1). Sleep time: %ld ms",
-//                      sleep_time_ms);
-//             if (rtc_is_adxl_inactive_ptr)
-//                 *rtc_is_adxl_inactive_ptr = false;
-//             app_event = APP_WAKE_ADXL_ACTIVITY;
-//         }
-//         else if (wakeup_pin_mask &
-//                  (1ULL << ADXL345_INT2_GPIO))
-//         { // INACTIVITY detected
-//             ESP_LOGI(TAG,
-//                      "Woke: ADXL INACTIVITY (INT2). Sleep time: %ld ms",
-//                      sleep_time_ms);
-//             if (rtc_is_adxl_inactive_ptr)
-//                 *rtc_is_adxl_inactive_ptr = true;
-//             app_event = APP_WAKE_ADXL_INACTIVITY;
-//         }
-//         else
-//         {
-//             ESP_LOGW(TAG,
-//                      "Woke: EXT1, unknown pin (0x%d). Sleep time: %ld ms. "
-//                      "ADXL RTC state unchanged.",
-//                      __builtin_ffsll(wakeup_pin_mask) - 1, sleep_time_ms);
-//             app_event =
-//                 APP_WAKE_OTHER; // Or a more specific APP_WAKE_EXT1_UNKNOWN
-//         }
-//         break;
-//     }
-//     case ESP_SLEEP_WAKEUP_TIMER:
-//         ESP_LOGI(
-//             TAG,
-//             "Woke: Timer. Sleep time: %ld ms. ADXL RTC state unchanged.",
-//             sleep_time_ms);
-//         app_event = APP_WAKE_TIMER;
-//         break;
-//     case ESP_SLEEP_WAKEUP_UNDEFINED:
-//         ESP_LOGI(TAG,
-//                  "Woke: Initial boot/Undefined. ADXL RTC state set to "
-//                  "INACTIVE.");
-//         if (rtc_is_adxl_inactive_ptr)
-//             *rtc_is_adxl_inactive_ptr = true;
-//         app_event = APP_WAKE_UNDEFINED_BOOT;
-//         break;
-//     default: // Other specific ESP32 wake causes (Touch, UART, etc.)
-//         ESP_LOGI(TAG,
-//                  "Woke: Other ESP32 cause (%d). Sleep time: %ld ms. ADXL "
-//                  "RTC state unchanged.",
-//                  cause, sleep_time_ms);
-//         app_event = APP_WAKE_OTHER;
-//         break;
-//     }
-
-//     if (rtc_is_adxl_inactive_ptr)
-//     {
-//         ESP_LOGI(TAG, "Current ADXL RTC state: %s",
-//                  *rtc_is_adxl_inactive_ptr ? "INACTIVE" : "ACTIVE");
-//     }
-//     return app_event;
-// }
-
-// ################### NEW IMPLEMENTATION ###########################
-
 app_wake_event_t sm_get_wakeup_cause(void)
 {
-    sm_boot_count++;
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     struct timeval now;
     gettimeofday(&now, NULL);
@@ -231,7 +98,7 @@ app_wake_event_t sm_get_wakeup_cause(void)
             (now.tv_sec - sleep_enter_time.tv_sec) * 1000L +
             (now.tv_usec - sleep_enter_time.tv_usec) / 1000L;
 
-            ESP_LOGI(TAG,"Time in sleep: %.3f s",sleep_time_ms*1.0/1000);
+        ESP_LOGI(TAG, "Time in sleep: %.3f s", sleep_time_ms * 1.0 / 1000);
     }
 
     switch (cause)
@@ -250,9 +117,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
                          sleep_time_ms);
 
                 sm_enable_adxl_wakeups(WAKE_ACTIVITY);
-                // adxl345_enable_activity_int();
-                // adxl345_disable_inactivity_int();
-                // adxl345_get_and_clear_int_source();
                 app_event = APP_WAKE_ADXL_INACTIVITY;
             }
             else if (int_src & ADXL345_INT_SOURCE_ACTIVITY)
@@ -262,9 +126,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
                          sleep_time_ms);
 
                 sm_enable_adxl_wakeups(WAKE_INACTIVITY);
-                // adxl345_enable_inactivity_int();
-                // adxl345_disable_activity_int();
-                // adxl345_get_and_clear_int_source();
                 app_event = APP_WAKE_ADXL_ACTIVITY;
             }
         }
@@ -275,9 +136,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
                      sleep_time_ms);
 
             sm_enable_adxl_wakeups(WAKE_INACTIVITY);
-            // adxl345_enable_inactivity_int();
-            // adxl345_disable_activity_int();
-            // adxl345_get_and_clear_int_source();
             app_event = APP_WAKE_USER_BUTTON;
         }
         else
@@ -302,9 +160,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
                  "Woke: Initial boot/Undefined. ADXL configure wake-up on: ACTIVITY");
 
         sm_enable_adxl_wakeups(WAKE_ACTIVITY);
-        // adxl345_enable_activity_int();
-        // adxl345_disable_inactivity_int();
-        // adxl345_get_and_clear_int_source();
         app_event = APP_WAKE_UNDEFINED_BOOT;
         break;
     default: // Other specific ESP32 wake causes (Touch, UART, etc.)
@@ -390,4 +245,61 @@ esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source)
     }
     adxl345_get_and_clear_int_source();
     return ESP_OK;
+}
+
+esp_err_t sm_tx_state_if_due(void)
+{
+    if (s_lora_event_group == NULL)
+    {
+        s_lora_event_group = xEventGroupCreate();
+    }
+
+    // char *msg = (char *)malloc(sizeof(char) * TX_BUF_SIZE);
+    lora_msg_t *msg = (lora_msg_t *)malloc(sizeof(lora_msg_t));
+
+    // char msg[TX_BUF_SIZE];
+    ESP_LOGI(TAG, "Sending TX: Battery only");
+    msg->buffer[0] = 0x00 /*battery_get_state()*/;
+    msg->buffer[1] = 0xff;
+
+    msg->tx_length = 1;
+
+    xTaskCreate(      // Use xTaskCreate() in vanilla FreeRTOS
+        rn_tx_task,   // Function to be called
+        "rn_tx_task", // Name of task
+        1024 * 5,     // Stack size (bytes in ESP32, words in FreeRTOS)
+        msg,          // Parameter to pass to function
+        5,            // Task priority (0 to configMAX_PRIORITIES - 1)
+        NULL);        // Task handle
+
+    return ESP_OK;
+}
+
+esp_err_t sm_wait_tx_done(void)
+{
+
+    EventBits_t bits = xEventGroupWaitBits(s_lora_event_group, LORA_TX_READY_BIT, true, true, 10000 / portTICK_PERIOD_MS);
+    if (bits & LORA_TX_READY_BIT)
+    {
+        return ESP_OK;
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+lora_status_t sm_get_lora_status(void)
+{
+    EventBits_t bits = xEventGroupGetBits(s_lora_event_group);
+    if (bits & LORA_FAIL_BIT)
+    {
+        return LORA_FAIL;
+    }
+    if (bits & LORA_TX_READY_BIT)
+    {
+        return LORA_TX_READY;
+    }
+    if (bits & LORA_RX_READY_BIT)
+    {
+        return LORA_RX_READY;
+    }
+    return LORA_BUSY;
 }

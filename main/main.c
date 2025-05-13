@@ -75,37 +75,9 @@ void app_main(void)
         ESP_LOGI(TAG, "Initial Boot");
         state_flags |= (1 << 0);
 
-        // rn_wake();
-
-        // if (rn_init_otaa() != ESP_OK)
-        // {
-        //     return;
-        // }
-
         rn_sleep();
     }
-    // else
-    // {
-    //     if (rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, false) != ESP_OK)
-    //     {
-    //         return;
-    //     }
-    // }
 
-    // esp_sleep_wakeup_cause_t initial_cause_for_lora =
-    // esp_sleep_get_wakeup_cause(); if (initial_cause_for_lora ==
-    // ESP_SLEEP_WAKEUP_UNDEFINED && !(state_flags & (1 << 0))) {
-    //     ESP_LOGI(TAG, "Initial Boot for LoRa OTAA");
-    //     rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
-    //     if (rn_init_otaa() != ESP_OK) { return; }
-    //     state_flags |= (1 << 0);
-    // } else {
-    //     ESP_LOGI(TAG, "Waking from sleep for LoRa (ABP or already joined)");
-    //     rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024,
-    //     false); if (rn_wake() != ESP_OK) { /* Handle error */ }
-    // }
-
-    // gpio_dump_io_configuration(stdout, SOC_GPIO_VALID_GPIO_MASK);
 
     while (!stop)
     {
@@ -162,6 +134,9 @@ void app_main(void)
                 state = idle; // Default fallback
                 break;
             }
+
+            /* Starts a thread, init RN module */
+            sm_tx_state_if_due();
             break; // Break from case wakeup
         }
 
@@ -196,6 +171,14 @@ void app_main(void)
             // if led is on, turn off
             // if last transm. older than T hours,      --> goto: TXRX
             // else,                                    --> goto: dsleep
+
+            // if(sm_tx_ready()){
+            //     if(sm_got_rx()){
+            //         uint8_t rx = sm_get_rx_data();
+            //         // update state flags based on rx
+            //     }
+                 
+            // }
             ESP_LOGI(TAG, "State: idle");
             ESP_LOGI(TAG, "Turn LED: OFF");
             led_state_off();
@@ -231,126 +214,126 @@ void app_main(void)
             /* not stolen:  [FLG]               */
             /* stolen:      [LAT][LAT][LAT][LAT][LON][LON][LON][LON][HAC][HAC][HAC][HAC][FLG]*/
 
-            char msg[TX_BUF_SIZE];
+            // char msg[TX_BUF_SIZE];
 
             /* if not stolen*/
-            if (!(state_flags & (1 << 1)))
-            {
+            // if (!(state_flags & (1 << 1)))
+            // {
 
-                ESP_LOGI(TAG, "Sending TX: Battery only");
-                msg[0] = 0 /*battery_get_state()*/;
+            //     ESP_LOGI(TAG, "Sending TX: Battery only");
+            //     msg[0] = 0 /*battery_get_state()*/;
 
-                unsigned int port = 0;
-                char rx_data[10];
-                /* Send Uplink data */
-                if (rn_wake() == ESP_OK)
-                {
-                    rn_tx(msg, 1, 1, true, rx_data, 10, &port);
-                }
-                if (port > 0)
-                {
-                    ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
-                    ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
+            //     unsigned int port = 0;
+            //     char rx_data[10];
+            //     /* Send Uplink data */
+            //     if (rn_wake() == ESP_OK)
+            //     {
+            //         rn_tx(msg, 1, 1, true, rx_data, 10, &port);
+            //     }
+            //     if (port > 0)
+            //     {
+            //         ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
+            //         ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
 
-                    /* Check flags in buffer
-                     * if STOLEN flag is raised, save it in state flags
-                     * if not STOLEN clear the HADFIX flag and STOLEN flag 
-                     * HERE: All calls for reconfiguration to go to stolen mode*/
-                    if (rx_data[0] & (1 << 0))
-                    {
-                        state_flags |= (1 << 1);
+            //         /* Check flags in buffer
+            //          * if STOLEN flag is raised, save it in state flags
+            //          * if not STOLEN clear the HADFIX flag and STOLEN flag 
+            //          * HERE: All calls for reconfiguration to go to stolen mode*/
+            //         if (rx_data[0] & (1 << 0))
+            //         {
+            //             state_flags |= (1 << 1);
 
-                        sm_enable_adxl_wakeups(WAKE_NONE);
-                    }
-                    else
-                    {
-                        state_flags &= ~(1 << 1);
-                        state_flags &= ~(1 << 2);
-                    };
-                }
-            }
-            /* If is STOLEN */
-            if (state_flags & (1 << 1))
-            {
-                ESP_LOGI(TAG, "Acitvating GNSS");
-                /* Init GNSS */
-                int32_t latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc;
-                if (gnss_wake() == ESP_OK)
-                {
-                    /* If HADFIX, there has been a fix, execute faster position acquisition */
-                    if (state_flags & (1 << 2))
-                    {
-                        ESP_LOGI(TAG, "Had fix, quick search");
-                        /* If not succesfull with quick seach, clear HADFIX flag */
-                        if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 60, false) != ESP_OK)
-                        {
-                            state_flags &= ~(1 << 2);
-                        }
-                    }
-                    /* if not HADIFIX, either because newly stolen or failed quick acquisition,
-                     * prolonged search*/
-                    if (!(state_flags & (1 << 2)))
-                    {
-                        ESP_LOGI(TAG, "Did not had fix, long search");
-                        /* inital GNSS search (long time), max. 5 min.
-                         * put to sleep while searching for GNSS.
-                         * If succesfull set HADFIX flag*/
-                        if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 5 * 60, true) == ESP_OK)
-                        {
-                            state_flags |= (1 << 2);
-                        }
-                    }
-                    /* Put GNSS back to sleep */
-                    gnss_sleep();
+            //             sm_enable_adxl_wakeups(WAKE_NONE);
+            //         }
+            //         else
+            //         {
+            //             state_flags &= ~(1 << 1);
+            //             state_flags &= ~(1 << 2);
+            //         };
+            //     }
+            // }
+            // /* If is STOLEN */
+            // if (state_flags & (1 << 1))
+            // {
+            //     ESP_LOGI(TAG, "Acitvating GNSS");
+            //     /* Init GNSS */
+            //     int32_t latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc;
+            //     if (gnss_wake() == ESP_OK)
+            //     {
+            //         /* If HADFIX, there has been a fix, execute faster position acquisition */
+            //         if (state_flags & (1 << 2))
+            //         {
+            //             ESP_LOGI(TAG, "Had fix, quick search");
+            //             /* If not succesfull with quick seach, clear HADFIX flag */
+            //             if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 60, false) != ESP_OK)
+            //             {
+            //                 state_flags &= ~(1 << 2);
+            //             }
+            //         }
+            //         /* if not HADIFIX, either because newly stolen or failed quick acquisition,
+            //          * prolonged search*/
+            //         if (!(state_flags & (1 << 2)))
+            //         {
+            //             ESP_LOGI(TAG, "Did not had fix, long search");
+            //             /* inital GNSS search (long time), max. 5 min.
+            //              * put to sleep while searching for GNSS.
+            //              * If succesfull set HADFIX flag*/
+            //             if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 5 * 60, true) == ESP_OK)
+            //             {
+            //                 state_flags |= (1 << 2);
+            //             }
+            //         }
+            //         /* Put GNSS back to sleep */
+            //         gnss_sleep();
 
-                    ESP_LOGI(TAG, "I am here: https://maps.google.com/?q=%3.7f,%3.7f; Height: %.3f; Horizontal Uncertainty: %.3f; Vertical Uncertainty: %.3f ",
-                             ((float)latitudeX1e7) / 10000000,
-                             ((float)longitudeX1e7) / 10000000,
-                             ((float)hMSL) / 1000,
-                             ((float)hAcc) / 1000,
-                             ((float)vAcc) / 1000);
+            //         ESP_LOGI(TAG, "I am here: https://maps.google.com/?q=%3.7f,%3.7f; Height: %.3f; Horizontal Uncertainty: %.3f; Vertical Uncertainty: %.3f ",
+            //                  ((float)latitudeX1e7) / 10000000,
+            //                  ((float)longitudeX1e7) / 10000000,
+            //                  ((float)hMSL) / 1000,
+            //                  ((float)hAcc) / 1000,
+            //                  ((float)vAcc) / 1000);
 
-                    /* populate msg buffer with FIX */
-                    memcpy(msg, &latitudeX1e7, sizeof(int32_t));
-                    memcpy(msg + 4, &longitudeX1e7, sizeof(int32_t));
-                    memcpy(msg + 8, &hAcc, sizeof(int32_t));
+            //         /* populate msg buffer with FIX */
+            //         memcpy(msg, &latitudeX1e7, sizeof(int32_t));
+            //         memcpy(msg + 4, &longitudeX1e7, sizeof(int32_t));
+            //         memcpy(msg + 8, &hAcc, sizeof(int32_t));
 
-                    ESP_LOGI(TAG, "Sending TX: Location + Battery");
-                    msg[TX_BUF_SIZE - 1] = 0 /*battery_get_state()*/;
+            //         ESP_LOGI(TAG, "Sending TX: Location + Battery");
+            //         msg[TX_BUF_SIZE - 1] = 0 /*battery_get_state()*/;
 
-                    ESP_LOG_BUFFER_HEXDUMP(TAG, msg, 13, ESP_LOG_INFO);
+            //         ESP_LOG_BUFFER_HEXDUMP(TAG, msg, 13, ESP_LOG_INFO);
 
-                    unsigned int port = 0;
-                    char rx_data[10];
-                    /* Send Uplink data */
-                    if (rn_wake() == ESP_OK)
-                    {
-                        rn_tx(msg, TX_BUF_SIZE, 1, true, rx_data, 10, &port);
-                        rn_sleep();
-                    }
+            //         unsigned int port = 0;
+            //         char rx_data[10];
+            //         /* Send Uplink data */
+            //         if (rn_wake() == ESP_OK)
+            //         {
+            //             rn_tx(msg, TX_BUF_SIZE, 1, true, rx_data, 10, &port);
+            //             rn_sleep();
+            //         }
 
-                    /* Parse buffer again*/
-                    if (port > 0)
-                    {
-                        ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
-                        ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
+            //         /* Parse buffer again*/
+            //         if (port > 0)
+            //         {
+            //             ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
+            //             ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
 
-                        /* Check flags in buffer*/
-                        if (rx_data[0] & (1 << 0))
-                        {
-                            state_flags |= (1 << 1);
-                        }
-                        else
-                        {
-                            /* Configure here to go back to normal operation */
-                            state_flags &= ~(1 << 1);
-                            state_flags &= ~(1 << 2);
+            //             /* Check flags in buffer*/
+            //             if (rx_data[0] & (1 << 0))
+            //             {
+            //                 state_flags |= (1 << 1);
+            //             }
+            //             else
+            //             {
+            //                 /* Configure here to go back to normal operation */
+            //                 state_flags &= ~(1 << 1);
+            //                 state_flags &= ~(1 << 2);
 
-                            sm_enable_adxl_wakeups(WAKE_ACTIVITY);
-                        }
-                    }
-                }
-            }
+            //                 sm_enable_adxl_wakeups(WAKE_ACTIVITY);
+            //             }
+            //         }
+            //     }
+            // }
 
             state = dsleep;
             break;
@@ -374,6 +357,8 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
+
+    sm_wait_tx_done();
 
     // gpio_deep_sleep_hold_en();
     gpio_hold_en(GPIO_NUM_13);
