@@ -64,8 +64,12 @@ esp_err_t sm_deep_sleep(
 esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source);
 
 esp_err_t sm_wait_tx_done(void);
-esp_err_t sm_tx_state_if_due(void);
+esp_err_t sm_tx_state_if_due(uint8_t flags);
+esp_err_t sm_tx_location(void);
+
 
 lora_status_t sm_get_lora_status(void);
+
+esp_err_t sm_get_rx_data(char *buf, size_t buf_size);
 
 #endif // MSLEEPMANAGER_H

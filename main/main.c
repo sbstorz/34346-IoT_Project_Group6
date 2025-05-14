@@ -11,17 +11,28 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mRN2483.h"
-#include "mGNSS.h"
 #include "mDigitalIO.h"
+#include "mGNSS.h"
+#include "mAnalogIO.h"
 
 #define TAG "Main"
 #define TX_BUF_SIZE 3 * 4 + 1
+
+#define IS_INIT (1 << 0)
+#define IS_STOLEN (1 << 1)
+#define LED_ON (1 << 3)
+#define LOW_BAT (1 << 4)
+
+#define LED_ON_DSLEEP_DURATION_S 5
+#define LED_OFF_DSLEEP_DURATION_S 10
+#define STOLEN_DSLEEP_DURATION_S 30
 
 typedef enum
 {
     wakeup,
     idle,
     led_on,
+    led_off,
     led_blink,
     low_bat,
     txrx,
@@ -38,21 +49,17 @@ static RTC_DATA_ATTR uint8_t state_flags = 0;
 // dont know yet, but could be user (at runtime) configured WIFI credentials
 // (FOR EXAMPLE)
 
-/* Some Considerations:
-Instead of continously running through the while loop, and repeatedly checking
-conditions in a state us the FreeRTOS tools like event bits to block the task.
-This allows the FreeRTOS to allocate ticks to other tasks since the main task is
-not busy.
-*/
-
 void app_main(void)
 {
-    state_t state = wakeup;
-    bool stop = 0;
-    unsigned int dsleep_time_s = 60;
 
-    // gpio_hold_dis(GPIO_NUM_2);
-    led_init(GPIO_NUM_13, state_flags & (1 << 3));
+    state_t state = wakeup;
+    bool wake_lock = 0;
+    bool stop = 0;
+    unsigned int dsleep_time_s = state_flags & LED_ON ? LED_ON_DSLEEP_DURATION_S : LED_OFF_DSLEEP_DURATION_S;
+
+    led_init(GPIO_NUM_13, state_flags & LED_ON);
+    button_init(GPIO_NUM_4);
+    adc_init(0, 3);
 
     if (sm_init_adxl(GPIO_NUM_19, GPIO_NUM_18) != ESP_OK)
     {
@@ -67,17 +74,17 @@ void app_main(void)
     }
 
     /* TX on GPIO 5 since this is pulled up after reset and during sleep, reset could be removed since MCU and Lora module are always restarted together*/
-    rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_4, 1024, true);
+    rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_27, 1024, true);
 
     ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
-    if (!(state_flags & (1 << 0)))
+    if (!(state_flags & IS_INIT))
     {
         ESP_LOGI(TAG, "Initial Boot");
-        state_flags |= (1 << 0);
+        state_flags |= IS_INIT;
 
         rn_sleep();
+        gnss_sleep();
     }
-
 
     while (!stop)
     {
@@ -86,12 +93,18 @@ void app_main(void)
         {
         case wakeup:
         {
+            if (state_flags & IS_STOLEN)
+            {
+                state = stolen;
+                break;
+            }
+
             app_wake_event_t app_event = sm_get_wakeup_cause();
             switch (app_event)
             {
             case APP_WAKE_UNDEFINED_BOOT:
                 ESP_LOGI(TAG, "Wakeup processing: Undefined/Initial Boot.");
-                state = idle; // Example: Initial action after boot
+                state = idle;
                 break;
             case APP_WAKE_ADXL_ACTIVITY:
                 ESP_LOGI(TAG,
@@ -101,26 +114,18 @@ void app_main(void)
             case APP_WAKE_ADXL_INACTIVITY:
                 ESP_LOGI(TAG,
                          "Wakeup processing: ADXL Inactivity detected.");
-                // rtc_is_adxl_inactive is now true
-                state = idle;
+                state = led_off;
                 break;
             case APP_WAKE_TIMER:
                 ESP_LOGI(TAG, "Wakeup processing: Timer.");
-                if (state_flags & (1 << 3))
-                {
-                    state = led_on;
-                }
-                else
-                {
-                    state = idle;
-                }
+                state = idle;
                 break;
             case APP_WAKE_USER_BUTTON:
                 ESP_LOGI(TAG, "Wakeup processing: User Button.");
                 /* If LED is on, turn it off, else turn it on*/
-                if (state_flags & (1 << 3))
+                if (state_flags & LED_ON)
                 {
-                    state = idle;
+                    state = led_off;
                 }
                 else
                 {
@@ -135,220 +140,181 @@ void app_main(void)
                 break;
             }
 
-            /* Starts a thread, init RN module */
-            sm_tx_state_if_due();
-            break; // Break from case wakeup
+            if (battery_is_low())
+            {
+                state_flags |= LOW_BAT;
+            }
+            else
+            {
+                state_flags &= ~LOW_BAT;
+            }
+
+            sm_tx_state_if_due(state_flags & LOW_BAT ? 0x01 : 0x00);
+            break;                // Break from case wakeup
         }
 
         case light_auto:
             ESP_LOGI(TAG, "State: light_auto");
-            // measure brightness outside
-
-            state = led_on;
-            break;
-
-        case led_on:
-            ESP_LOGI(TAG, "State: led_on");
-            // Measure Battery Level
-            bool battery_low = false;
-            if (!battery_low)
+            if (ldr_is_dark())
             {
-                ESP_LOGI(TAG, "Turn LED: ON");
-                led_state_on();
-                state_flags |= (1 << 3);
-                dsleep_time_s = 5;
-                stop = 1;
+                state = led_on;
             }
             else
             {
-                state = led_blink;
+                state = idle;
             }
+
+            break;
+
+        case led_on:
+            ESP_LOGI(TAG, "Turn LED: ON");
+            if (state_flags & LOW_BAT)
+            {
+                if (!led_is_blinking())
+                {
+                    led_start_blink();
+                    wake_lock = 1;
+                }
+            }
+            else
+            {
+                led_state_on();
+                dsleep_time_s = LED_ON_DSLEEP_DURATION_S;
+            }
+
+            state_flags |= LED_ON;
+            state = idle;
+
+            break;
+
+        case led_off:
+            ESP_LOGI(TAG, "Turn LED: OFF");
+            if (led_is_blinking())
+            {
+                led_stop_blink();
+                wake_lock = 0;
+            }
+            else
+            {
+                led_state_off();
+            }
+            state_flags &= ~LED_ON;
+            dsleep_time_s = LED_OFF_DSLEEP_DURATION_S;
+            if (state_flags & IS_STOLEN)
+            {
+                state = stolen;
+            }
+            else
+            {
+                state = idle;
+            }
+            break;
+
+        case led_blink:
+
+            ESP_LOGI(TAG, "State: led_blink");
+            if (!led_is_blinking())
+            {
+                led_start_blink();
+                state_flags |= LED_ON;
+                wake_lock = 1;
+            }
+            state = idle;
 
             break;
 
         case idle:
-            // check when last transmission was made
-            // if led is on, turn off
-            // if last transm. older than T hours,      --> goto: TXRX
-            // else,                                    --> goto: dsleep
 
-            // if(sm_tx_ready()){
-            //     if(sm_got_rx()){
-            //         uint8_t rx = sm_get_rx_data();
-            //         // update state flags based on rx
-            //     }
-                 
-            // }
-            ESP_LOGI(TAG, "State: idle");
-            ESP_LOGI(TAG, "Turn LED: OFF");
-            led_state_off();
-            state_flags &= ~(1 << 3);
-            state = txrx;
+            // if (button_had_rEdge())
+            if (button_get_level())
+            {
+                button_wait_fEdge();
+                vTaskDelay(100 / portTICK_PERIOD_MS);
+                if (state_flags & LED_ON)
+                {
+                    state = led_off;
+                }
+                else
+                {
+                    state = led_on;
+                }
+            }
+
+            switch (sm_get_lora_status())
+            {
+            case LORA_TX_READY:
+                if (!(wake_lock))
+                {
+                    state = dsleep;
+                }
+
+                break;
+            case LORA_RX_READY:
+
+                char buf[10];
+                sm_get_rx_data(buf, 10);
+                ESP_LOG_BUFFER_HEXDUMP(TAG, buf, 10, ESP_LOG_INFO);
+                if (buf[0] & 0x01)
+                {
+                    sm_enable_adxl_wakeups(WAKE_NONE);
+                    led_state_off();
+                    state_flags |= IS_STOLEN;
+                    state = led_off;
+                }
+                else
+                {
+                    state_flags &= ~IS_STOLEN;
+                    if (!(wake_lock))
+                    {
+                        state = dsleep;
+                    }
+                }
+
+                break;
+            case LORA_FAIL:
+                if (!(wake_lock))
+                {
+                    state = dsleep;
+                }
+                break;
+            default:
+                break;
+            }
+            // ESP_LOGI(TAG, "idle, next state: %d", state);
             break;
 
-        case lsleep:
-            // measure battery level
-            // if low_batt,                             --> goto: led_blink
-            // enter light sleep (or potentially deep sleep)
-            // after wakeup execution continues here (in l. sleep only)
-            // get wake reason
-            // if wake reason button or inactivity,     --> goto: idle
-            // else,                                    --> goto: lsleep
-            break;
+        case stolen:
 
-        case led_blink:
-            // start led flash task
-            // block and wait for button_press or inactivity
-            // then,                                    --> goto: idle
-            break;
-        case txrx:
-            // if !stolen, send battery
-            // else, send battery + location
-            // process RX
-            // if RX contains new stolen,
-            // send battery + location
-            // reconfigure wakeups
-
-            ESP_LOGI(TAG, "State: txrx");
-
-            /* not stolen:  [FLG]               */
-            /* stolen:      [LAT][LAT][LAT][LAT][LON][LON][LON][LON][HAC][HAC][HAC][HAC][FLG]*/
-
-            // char msg[TX_BUF_SIZE];
-
-            /* if not stolen*/
-            // if (!(state_flags & (1 << 1)))
-            // {
-
-            //     ESP_LOGI(TAG, "Sending TX: Battery only");
-            //     msg[0] = 0 /*battery_get_state()*/;
-
-            //     unsigned int port = 0;
-            //     char rx_data[10];
-            //     /* Send Uplink data */
-            //     if (rn_wake() == ESP_OK)
-            //     {
-            //         rn_tx(msg, 1, 1, true, rx_data, 10, &port);
-            //     }
-            //     if (port > 0)
-            //     {
-            //         ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
-            //         ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
-
-            //         /* Check flags in buffer
-            //          * if STOLEN flag is raised, save it in state flags
-            //          * if not STOLEN clear the HADFIX flag and STOLEN flag 
-            //          * HERE: All calls for reconfiguration to go to stolen mode*/
-            //         if (rx_data[0] & (1 << 0))
-            //         {
-            //             state_flags |= (1 << 1);
-
-            //             sm_enable_adxl_wakeups(WAKE_NONE);
-            //         }
-            //         else
-            //         {
-            //             state_flags &= ~(1 << 1);
-            //             state_flags &= ~(1 << 2);
-            //         };
-            //     }
-            // }
-            // /* If is STOLEN */
-            // if (state_flags & (1 << 1))
-            // {
-            //     ESP_LOGI(TAG, "Acitvating GNSS");
-            //     /* Init GNSS */
-            //     int32_t latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc;
-            //     if (gnss_wake() == ESP_OK)
-            //     {
-            //         /* If HADFIX, there has been a fix, execute faster position acquisition */
-            //         if (state_flags & (1 << 2))
-            //         {
-            //             ESP_LOGI(TAG, "Had fix, quick search");
-            //             /* If not succesfull with quick seach, clear HADFIX flag */
-            //             if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 60, false) != ESP_OK)
-            //             {
-            //                 state_flags &= ~(1 << 2);
-            //             }
-            //         }
-            //         /* if not HADIFIX, either because newly stolen or failed quick acquisition,
-            //          * prolonged search*/
-            //         if (!(state_flags & (1 << 2)))
-            //         {
-            //             ESP_LOGI(TAG, "Did not had fix, long search");
-            //             /* inital GNSS search (long time), max. 5 min.
-            //              * put to sleep while searching for GNSS.
-            //              * If succesfull set HADFIX flag*/
-            //             if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 5 * 60, true) == ESP_OK)
-            //             {
-            //                 state_flags |= (1 << 2);
-            //             }
-            //         }
-            //         /* Put GNSS back to sleep */
-            //         gnss_sleep();
-
-            //         ESP_LOGI(TAG, "I am here: https://maps.google.com/?q=%3.7f,%3.7f; Height: %.3f; Horizontal Uncertainty: %.3f; Vertical Uncertainty: %.3f ",
-            //                  ((float)latitudeX1e7) / 10000000,
-            //                  ((float)longitudeX1e7) / 10000000,
-            //                  ((float)hMSL) / 1000,
-            //                  ((float)hAcc) / 1000,
-            //                  ((float)vAcc) / 1000);
-
-            //         /* populate msg buffer with FIX */
-            //         memcpy(msg, &latitudeX1e7, sizeof(int32_t));
-            //         memcpy(msg + 4, &longitudeX1e7, sizeof(int32_t));
-            //         memcpy(msg + 8, &hAcc, sizeof(int32_t));
-
-            //         ESP_LOGI(TAG, "Sending TX: Location + Battery");
-            //         msg[TX_BUF_SIZE - 1] = 0 /*battery_get_state()*/;
-
-            //         ESP_LOG_BUFFER_HEXDUMP(TAG, msg, 13, ESP_LOG_INFO);
-
-            //         unsigned int port = 0;
-            //         char rx_data[10];
-            //         /* Send Uplink data */
-            //         if (rn_wake() == ESP_OK)
-            //         {
-            //             rn_tx(msg, TX_BUF_SIZE, 1, true, rx_data, 10, &port);
-            //             rn_sleep();
-            //         }
-
-            //         /* Parse buffer again*/
-            //         if (port > 0)
-            //         {
-            //             ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
-            //             ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
-
-            //             /* Check flags in buffer*/
-            //             if (rx_data[0] & (1 << 0))
-            //             {
-            //                 state_flags |= (1 << 1);
-            //             }
-            //             else
-            //             {
-            //                 /* Configure here to go back to normal operation */
-            //                 state_flags &= ~(1 << 1);
-            //                 state_flags &= ~(1 << 2);
-
-            //                 sm_enable_adxl_wakeups(WAKE_ACTIVITY);
-            //             }
-            //         }
-            //     }
-            // }
-
+            sm_tx_location();
+            sm_wait_tx_done();
+            switch (sm_get_lora_status())
+            {
+            case LORA_RX_READY:
+                char buf[10];
+                sm_get_rx_data(buf, 10);
+                ESP_LOG_BUFFER_HEXDUMP(TAG, buf, 10, ESP_LOG_INFO);
+                /* If stolen and receviced downlink indicating no longer stolen */
+                if (!(buf[0] & 0x01))
+                {
+                    sm_enable_adxl_wakeups(WAKE_ACTIVITY);
+                    state_flags &= ~IS_STOLEN;
+                }
+                break;
+            case LORA_TX_READY:
+            case LORA_FAIL:
+            default:
+                break;
+            }
+            dsleep_time_s = STOLEN_DSLEEP_DURATION_S;
             state = dsleep;
             break;
 
         case dsleep:
-
-            // const int wakeup_time_sec = 10;
-            // ESP_LOGI(TAG, "Enabling timer wakeup, %ds\n", wakeup_time_sec);
-            // ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(wakeup_time_sec * 1000000));
-            state = wakeup;
             stop = 1;
             break;
         default:
-            ESP_LOGW(TAG, "Unknown state: %d, going to idle.", state);
-            state = idle;
+            ESP_LOGW(TAG, "Unknown state: %d, going to sleep.", state);
+            state = dsleep;
             break;
         }
 
@@ -358,14 +324,22 @@ void app_main(void)
         }
     }
 
-    sm_wait_tx_done();
+    if (button_get_level())
+    {
+        ESP_LOGI(TAG, "wait for f_edge");
+        button_wait_fEdge();
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+        ESP_LOGI(TAG, "f_edge came");
+    }
 
-    // gpio_deep_sleep_hold_en();
     gpio_hold_en(GPIO_NUM_13);
-    if (state_flags & (1 << 1)){
-        sm_deep_sleep(GPIO_NUM_NC, GPIO_NUM_NC, dsleep_time_s * 1000 * 1000);;
-    }else{
+    gpio_hold_en(GPIO_NUM_27);
+    if (state_flags & IS_STOLEN)
+    {
+        sm_deep_sleep(GPIO_NUM_NC, GPIO_NUM_NC, dsleep_time_s * 1000 * 1000);
+    }
+    else
+    {
         sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, dsleep_time_s * 1000 * 1000);
     }
-    
 }

@@ -201,15 +201,15 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
 
     // gpio_reset_pin(RST_PIN);
     /* Set the GPIO as a push/pull output */
-    // gpio_config_t cfg = {
-    //     .pin_bit_mask = BIT64(RST_PIN),
-    //     .mode = GPIO_MODE_DEF_OUTPUT,
-    //     // for powersave reasons, the GPIO should not be floating, select pullup
-    //     .pull_up_en = true,
-    //     .pull_down_en = false,
-    //     .intr_type = GPIO_INTR_DISABLE,
-    // };
-    // gpio_config(&cfg);
+    gpio_config_t cfg = {
+        .pin_bit_mask = BIT64(RST_PIN),
+        .mode = GPIO_MODE_OUTPUT_OD,
+        // for powersave reasons, the GPIO should not be floating, select pullup
+        .pull_up_en = false,
+        .pull_down_en = false,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
 
     // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
     // gpio_pullup_en(RST_PIN);
@@ -220,7 +220,7 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
 
     if (reset)
     {
-        // rn_reset();
+        rn_reset();
     }
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
@@ -312,11 +312,13 @@ esp_err_t rn_init_otaa(void)
 
         rxBuf[n] = 0;
 
-        if(strcmp(rxBuf, "accepted") == 0){
-            break;;
+        if (strcmp(rxBuf, "accepted") == 0)
+        {
+            break;
+            ;
         }
     }
-    
+
     // do
     // {
     //     i++;
@@ -458,9 +460,13 @@ esp_err_t rn_tx(char *tx_data, size_t tx_data_size, unsigned int tx_port, bool e
         case no_free_ch:
             vTaskDelay(10000 / portTICK_PERIOD_MS);
             break;
-
+        case invalid_param:
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            break;
         default:
-            return ESP_FAIL;
+            rn_reset();
+            uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
+            // return ESP_FAIL;
             break;
         }
         i++;
@@ -504,7 +510,7 @@ esp_err_t rn_tx(char *tx_data, size_t tx_data_size, unsigned int tx_port, bool e
             return 1;
         }
 
-        base16decode(rx_data, buf,0);
+        base16decode(rx_data, buf, 0);
         free(buf);
 
         return ESP_OK;

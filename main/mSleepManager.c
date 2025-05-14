@@ -4,50 +4,59 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "adxl345.h"
 #include "mRN2483.h"
+#include "mGNSS.h"
 
 #define LORA_FAIL_BIT BIT0
 #define LORA_TX_READY_BIT BIT1
 #define LORA_RX_READY_BIT BIT2
 #define TX_BUF_SIZE 3 * 4 + 1
+#define RX_BUF_SIZE 10
+#define HAD_FIX (1 << 2)
+#define LORA_COOLDOWN_S 20
 
 static const char *TAG = "SM"; // Tag for logging
 
 static EventGroupHandle_t s_lora_event_group = NULL;
+static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 /* this is private to this file (static) */
 typedef struct
 {
     char buffer[TX_BUF_SIZE]; /*!< pointer to heap where message is stored*/
-    size_t tx_length;      /*!< length of msg*/
+    size_t tx_length;         /*!< length of msg*/
 } lora_msg_t;
 
+static char _rx_data[RX_BUF_SIZE];
+
 // RTC data specific to this module's operation of determining sleep duration.
-// Note: The main rtc_is_adxl_inactive flag is in main.c and passed by pointer.
 static RTC_DATA_ATTR struct timeval sleep_enter_time;
+static RTC_DATA_ATTR struct timeval last_lora_tx_time =  {.tv_sec = 0, .tv_usec = 0};
 
 // RTC memory could be avoided by using defines
 static RTC_DATA_ATTR gpio_num_t _adxl_int1_pin = GPIO_NUM_NC;
 static RTC_DATA_ATTR gpio_num_t _usr_button_pin = GPIO_NUM_NC;
+static RTC_DATA_ATTR uint8_t state_flags = 0;
 
 static void rn_tx_task(void *params)
 {
     lora_msg_t *msg = (lora_msg_t *)params;
 
-    ESP_LOG_BUFFER_HEXDUMP(TAG,msg->buffer,TX_BUF_SIZE,ESP_LOG_INFO);
-
     unsigned int port = 0;
-    char rx_data[10];
+    char rx_buf[RX_BUF_SIZE];
     /* Send Uplink data */
     if (rn_wake() == ESP_OK)
     {
-        if (rn_tx(msg->buffer, msg->tx_length, 1, true, rx_data, 10, &port) != ESP_OK)
+        if (rn_tx(msg->buffer, msg->tx_length, 1, true, rx_buf, RX_BUF_SIZE, &port) == ESP_OK)
         {
+            gettimeofday(&last_lora_tx_time, NULL);
+        }else{
             xEventGroupSetBits(s_lora_event_group, LORA_FAIL_BIT);
         }
     }
@@ -58,17 +67,94 @@ static void rn_tx_task(void *params)
     if (port > 0)
     {
         ESP_LOGI(TAG, "Received RX, port: %d, data:", port);
-        ESP_LOG_BUFFER_HEXDUMP(TAG, rx_data, strlen(rx_data), ESP_LOG_INFO);
+        ESP_LOG_BUFFER_HEXDUMP(TAG, rx_buf, RX_BUF_SIZE, ESP_LOG_INFO);
+
+        taskENTER_CRITICAL(&spinlock);
+        memcpy(_rx_data, rx_buf, RX_BUF_SIZE);
+        taskEXIT_CRITICAL(&spinlock);
+
         xEventGroupSetBits(s_lora_event_group, LORA_RX_READY_BIT);
     }
-    xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+    else
+    {
+        xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+    }
 
     free(msg);
 
     vTaskDelete(NULL);
 }
 
-// --- I2C and ADXL345 Initialization ---
+static esp_err_t tx(lora_msg_t *msg)
+{
+    xTaskCreate(      // Use xTaskCreate() in vanilla FreeRTOS
+        rn_tx_task,   // Function to be called
+        "rn_tx_task", // Name of task
+        1024 * 5,     // Stack size (bytes in ESP32, words in FreeRTOS)
+        msg,          // Parameter to pass to function
+        5,            // Task priority (0 to configMAX_PRIORITIES - 1)
+        NULL);        // Task handle
+
+    return ESP_OK;
+}
+
+static esp_err_t get_location_msg(lora_msg_t *msg)
+{
+    ESP_LOGI(TAG, "Acitvating GNSS");
+    /* Init GNSS */
+    int32_t latitudeX1e7, longitudeX1e7, hMSL, hAcc, vAcc;
+    if (gnss_wake() != ESP_OK)
+    {
+        memset(msg->buffer, 0, msg->tx_length);
+        return ESP_FAIL;
+    }
+
+    /* If HADFIX, there has been a fix, execute faster position acquisition */
+    if (state_flags & HAD_FIX)
+    {
+        ESP_LOGI(TAG, "Had fix, quick search");
+        /* If not succesfull with quick seach, clear HADFIX flag */
+        if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 60, false) != ESP_OK)
+        {
+            state_flags &= ~HAD_FIX;
+        }
+    }
+    /* if not HADIFIX, either because newly stolen or failed quick acquisition,
+     * prolonged search*/
+    if (!(state_flags & HAD_FIX))
+    {
+        ESP_LOGI(TAG, "Did not had fix, long search");
+        /* inital GNSS search (long time), max. 5 min.
+         * put to sleep while searching for GNSS.
+         * If succesfull set HADFIX flag*/
+        if (gnss_get_location(&latitudeX1e7, &longitudeX1e7, &hMSL, &hAcc, &vAcc, 5 * 60, true) == ESP_OK)
+        {
+            state_flags |= HAD_FIX;
+        }
+    }
+    /* Put GNSS back to sleep */
+    gnss_sleep();
+
+    ESP_LOGI(TAG, "I am here: https://maps.google.com/?q=%3.7f,%3.7f; Height: %.3f; Horizontal Uncertainty: %.3f; Vertical Uncertainty: %.3f ",
+             ((float)latitudeX1e7) / 10000000,
+             ((float)longitudeX1e7) / 10000000,
+             ((float)hMSL) / 1000,
+             ((float)hAcc) / 1000,
+             ((float)vAcc) / 1000);
+
+    /* populate msg buffer with FIX */
+    memcpy(msg->buffer, &latitudeX1e7, sizeof(int32_t));
+    memcpy(msg->buffer + 4, &longitudeX1e7, sizeof(int32_t));
+    memcpy(msg->buffer + 8, &hAcc, sizeof(int32_t));
+
+    if (state_flags & HAD_FIX)
+    {
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+
+}
+
 esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
 {
     adxl_device_config_t adxl_config = {
@@ -76,7 +162,7 @@ esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
         .inactivity_int_pin = ADXL345_INT1_PIN,
         .activity_threshold = 40,
         .inactivity_threshold = 40,
-        .inactivity_time_s = 30, /* TODO: Adjust*/
+        .inactivity_time_s = 30,
         .sda_pin = sda,
         .scl_pin = scl,
     };
@@ -98,7 +184,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
             (now.tv_sec - sleep_enter_time.tv_sec) * 1000L +
             (now.tv_usec - sleep_enter_time.tv_usec) / 1000L;
 
-        ESP_LOGI(TAG, "Time in sleep: %.3f s", sleep_time_ms * 1.0 / 1000);
     }
 
     switch (cause)
@@ -247,30 +332,52 @@ esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source)
     return ESP_OK;
 }
 
-esp_err_t sm_tx_state_if_due(void)
+esp_err_t sm_tx_state_if_due(uint8_t flags)
 {
     if (s_lora_event_group == NULL)
     {
         s_lora_event_group = xEventGroupCreate();
     }
 
-    // char *msg = (char *)malloc(sizeof(char) * TX_BUF_SIZE);
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    long dt =
+        (now.tv_sec - last_lora_tx_time.tv_sec) * 1000L +
+        (now.tv_usec - last_lora_tx_time.tv_usec) / 1000L;
+
+    if (dt <= LORA_COOLDOWN_S * 1000 && last_lora_tx_time.tv_sec != 0 && last_lora_tx_time.tv_usec != 0)
+    {
+        xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+        return ESP_OK;
+    }
+
     lora_msg_t *msg = (lora_msg_t *)malloc(sizeof(lora_msg_t));
 
-    // char msg[TX_BUF_SIZE];
     ESP_LOGI(TAG, "Sending TX: Battery only");
-    msg->buffer[0] = 0x00 /*battery_get_state()*/;
-    msg->buffer[1] = 0xff;
-
+    msg->buffer[0] = flags;
     msg->tx_length = 1;
 
-    xTaskCreate(      // Use xTaskCreate() in vanilla FreeRTOS
-        rn_tx_task,   // Function to be called
-        "rn_tx_task", // Name of task
-        1024 * 5,     // Stack size (bytes in ESP32, words in FreeRTOS)
-        msg,          // Parameter to pass to function
-        5,            // Task priority (0 to configMAX_PRIORITIES - 1)
-        NULL);        // Task handle
+    tx(msg);
+
+    return ESP_OK;
+}
+
+esp_err_t sm_tx_location(void)
+{
+    if (s_lora_event_group == NULL)
+    {
+        s_lora_event_group = xEventGroupCreate();
+    }
+
+    lora_msg_t *msg = (lora_msg_t *)malloc(sizeof(lora_msg_t));
+    msg->tx_length = TX_BUF_SIZE;
+
+    get_location_msg(msg);
+
+    ESP_LOGI(TAG, "Sending TX: Location + Battery");
+    msg->buffer[TX_BUF_SIZE - 1] = 0x00 /*battery_get_state()*/;
+
+    tx(msg);
 
     return ESP_OK;
 }
@@ -278,11 +385,16 @@ esp_err_t sm_tx_state_if_due(void)
 esp_err_t sm_wait_tx_done(void)
 {
 
-    EventBits_t bits = xEventGroupWaitBits(s_lora_event_group, LORA_TX_READY_BIT, true, true, 10000 / portTICK_PERIOD_MS);
-    if (bits & LORA_TX_READY_BIT)
+    EventBits_t bits = xEventGroupWaitBits(s_lora_event_group, LORA_TX_READY_BIT | LORA_RX_READY_BIT | LORA_FAIL_BIT, false, false, 30 * 1000 / portTICK_PERIOD_MS);
+    if (bits & (LORA_FAIL_BIT))
+    {
+        return ESP_FAIL;
+    }
+    if (bits & (LORA_TX_READY_BIT | LORA_RX_READY_BIT))
     {
         return ESP_OK;
     }
+
     return ESP_ERR_TIMEOUT;
 }
 
@@ -302,4 +414,23 @@ lora_status_t sm_get_lora_status(void)
         return LORA_RX_READY;
     }
     return LORA_BUSY;
+}
+
+esp_err_t sm_get_rx_data(char *buf, size_t buf_size)
+{
+    if (buf == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (buf_size < RX_BUF_SIZE)
+    {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    taskENTER_CRITICAL(&spinlock);
+    memcpy(buf, _rx_data, RX_BUF_SIZE);
+    taskEXIT_CRITICAL(&spinlock);
+
+    return ESP_OK;
 }
