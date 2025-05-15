@@ -33,13 +33,10 @@ typedef enum
     idle,
     led_on,
     led_off,
-    led_blink,
     low_bat,
-    txrx,
     stolen,
     light_auto,
     dsleep,
-    lsleep
 } state_t;
 
 /* RTC Vars for main application logic */
@@ -118,6 +115,7 @@ void app_main(void)
                 break;
             case APP_WAKE_TIMER:
                 ESP_LOGI(TAG, "Wakeup processing: Timer.");
+                
                 state = idle;
                 break;
             case APP_WAKE_USER_BUTTON:
@@ -142,44 +140,52 @@ void app_main(void)
 
             if (battery_is_low())
             {
+                ESP_LOGI(TAG, "Battery Low");
                 state_flags |= LOW_BAT;
             }
             else
             {
+                ESP_LOGI(TAG, "Battery not Low");
                 state_flags &= ~LOW_BAT;
             }
 
-            sm_tx_state_if_due(state_flags & LOW_BAT ? 0x01 : 0x00);
-            break;                // Break from case wakeup
+            break; // Break from case wakeup
         }
 
         case light_auto:
             ESP_LOGI(TAG, "State: light_auto");
             if (ldr_is_dark())
             {
+                ESP_LOGI(TAG, "dark");
                 state = led_on;
             }
             else
             {
+                ESP_LOGI(TAG, "light");
                 state = idle;
             }
 
             break;
 
         case led_on:
-            ESP_LOGI(TAG, "Turn LED: ON");
             if (state_flags & LOW_BAT)
             {
                 if (!led_is_blinking())
                 {
+                    ESP_LOGI(TAG, "Turn LED: BLINK");
                     led_start_blink();
-                    wake_lock = 1;
+                    // DEBOUNCE delay
+                    vTaskDelay(100 / portTICK_PERIOD_MS);
                 }
+                wake_lock = 1;
             }
             else
             {
+                ESP_LOGI(TAG, "Turn LED: ON");
                 led_state_on();
                 dsleep_time_s = LED_ON_DSLEEP_DURATION_S;
+                // DEBOUNCE delay
+                vTaskDelay(100 / portTICK_PERIOD_MS);
             }
 
             state_flags |= LED_ON;
@@ -188,14 +194,16 @@ void app_main(void)
             break;
 
         case led_off:
-            ESP_LOGI(TAG, "Turn LED: OFF");
+            ESP_LOGI(TAG, "state: led_off");
             if (led_is_blinking())
             {
+                ESP_LOGI(TAG, "LED STOP BLINK");
                 led_stop_blink();
                 wake_lock = 0;
             }
             else
             {
+                ESP_LOGI(TAG, "LED OFF");
                 led_state_off();
             }
             state_flags &= ~LED_ON;
@@ -210,26 +218,18 @@ void app_main(void)
             }
             break;
 
-        case led_blink:
-
-            ESP_LOGI(TAG, "State: led_blink");
-            if (!led_is_blinking())
-            {
-                led_start_blink();
-                state_flags |= LED_ON;
-                wake_lock = 1;
-            }
-            state = idle;
-
-            break;
-
         case idle:
 
-            // if (button_had_rEdge())
+            sm_tx_state_if_due(state_flags & LOW_BAT ? 0x01 : 0x00);
+
+            if (state_flags & LOW_BAT && state_flags & LED_ON)
+            {
+                state = led_on;
+                wake_lock = 1;
+            }
             if (button_get_level())
             {
                 button_wait_fEdge();
-                vTaskDelay(100 / portTICK_PERIOD_MS);
                 if (state_flags & LED_ON)
                 {
                     state = led_off;
@@ -259,6 +259,7 @@ void app_main(void)
                     sm_enable_adxl_wakeups(WAKE_NONE);
                     led_state_off();
                     state_flags |= IS_STOLEN;
+                    wake_lock = 0;
                     state = led_off;
                 }
                 else

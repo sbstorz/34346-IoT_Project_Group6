@@ -1,17 +1,19 @@
 #include "mAnalogIO.h"
+#include "esp_log.h"
 
 #include "driver/adc.h"
-// #include "esp_adc/adc_oneshot.h"
-// static adc_oneshot_unit_handle_t adc1_handle;
+#define TAG "ADC"
 
-/*
-channel_0 = PIN_36, channel_1 = PIN_37, channel_2 = PIN_38, channel_3 = PIN_39
-channel_4 = PIN_32, channel_5 = PIN_33, channel_6 = PIN_34, channel_7 = PIN_35
-#define Battery_Channel 6
-#define LDR_Channel 4
-*/
+static RTC_DATA_ATTR int i = 0;
 
-static uint8_t _battery_pin = -1;
+    /*
+    channel_0 = PIN_36, channel_1 = PIN_37, channel_2 = PIN_38, channel_3 = PIN_39
+    channel_4 = PIN_32, channel_5 = PIN_33, channel_6 = PIN_34, channel_7 = PIN_35
+    #define Battery_Channel 6
+    #define LDR_Channel 4
+    */
+
+    static uint8_t _battery_pin = -1;
 static uint8_t _ldr_pin = -1;
 
 esp_err_t adc_init(int ldr_pin, int battery_pin)
@@ -38,12 +40,14 @@ static float AnalogRead(int channel)
 
     sum /= 20;
 
+    ESP_LOGI(TAG, "analog read: %.3f", sum * 3.3 / 4069);
+
     return sum * 3.3 / 4069;
 }
 
 int ldr_is_dark(void)
 {
-    if (AnalogRead(_ldr_pin) > 1.5)
+    if (AnalogRead(_ldr_pin) > 0.1)
     {
         return 1;
     }
@@ -55,14 +59,12 @@ int ldr_is_dark(void)
 
 int battery_is_low(void)
 {
-    if (AnalogRead(_battery_pin) > 1.75)
-    // if (AnalogRead(_battery_pin) > 10.75)
+
+    // if (AnalogRead(_battery_pin) > 1.75)
+    if (i++ < 5)
     {
         return 0;
     }
-    else
-    {
-        return 1;
-    }
 
+    return 1;
 }

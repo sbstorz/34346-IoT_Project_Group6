@@ -5,7 +5,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
-
+#include "esp_timer.h"
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 #include "esp_log.h"
@@ -16,6 +16,8 @@
 #define LORA_FAIL_BIT BIT0
 #define LORA_TX_READY_BIT BIT1
 #define LORA_RX_READY_BIT BIT2
+#define LORA_BUSY_BIT BIT3
+
 #define TX_BUF_SIZE 3 * 4 + 1
 #define RX_BUF_SIZE 10
 #define HAD_FIX (1 << 2)
@@ -34,10 +36,11 @@ typedef struct
 } lora_msg_t;
 
 static char _rx_data[RX_BUF_SIZE];
+static int64_t _last_tx_call = 0;
 
 // RTC data specific to this module's operation of determining sleep duration.
 static RTC_DATA_ATTR struct timeval sleep_enter_time;
-static RTC_DATA_ATTR struct timeval last_lora_tx_time =  {.tv_sec = 0, .tv_usec = 0};
+static RTC_DATA_ATTR struct timeval last_lora_tx_time = {.tv_sec = 0, .tv_usec = 0};
 
 // RTC memory could be avoided by using defines
 static RTC_DATA_ATTR gpio_num_t _adxl_int1_pin = GPIO_NUM_NC;
@@ -48,6 +51,8 @@ static void rn_tx_task(void *params)
 {
     lora_msg_t *msg = (lora_msg_t *)params;
 
+    xEventGroupClearBits(s_lora_event_group, LORA_FAIL_BIT | LORA_TX_READY_BIT | LORA_RX_READY_BIT);
+
     unsigned int port = 0;
     char rx_buf[RX_BUF_SIZE];
     /* Send Uplink data */
@@ -56,7 +61,10 @@ static void rn_tx_task(void *params)
         if (rn_tx(msg->buffer, msg->tx_length, 1, true, rx_buf, RX_BUF_SIZE, &port) == ESP_OK)
         {
             gettimeofday(&last_lora_tx_time, NULL);
-        }else{
+            xEventGroupClearBits(s_lora_event_group, LORA_FAIL_BIT);
+        }
+        else
+        {
             xEventGroupSetBits(s_lora_event_group, LORA_FAIL_BIT);
         }
     }
@@ -82,18 +90,29 @@ static void rn_tx_task(void *params)
 
     free(msg);
 
+    xEventGroupClearBits(s_lora_event_group, LORA_BUSY_BIT);
+
     vTaskDelete(NULL);
 }
 
 static esp_err_t tx(lora_msg_t *msg)
 {
-    xTaskCreate(      // Use xTaskCreate() in vanilla FreeRTOS
-        rn_tx_task,   // Function to be called
-        "rn_tx_task", // Name of task
-        1024 * 5,     // Stack size (bytes in ESP32, words in FreeRTOS)
-        msg,          // Parameter to pass to function
-        5,            // Task priority (0 to configMAX_PRIORITIES - 1)
-        NULL);        // Task handle
+    xEventGroupSetBits(s_lora_event_group, LORA_BUSY_BIT);
+    if (xTaskCreate(         // Use xTaskCreate() in vanilla FreeRTOS
+            rn_tx_task,      // Function to be called
+            "rn_tx_task",    // Name of task
+            1024 * 5,        // Stack size (bytes in ESP32, words in FreeRTOS)
+            msg,             // Parameter to pass to function
+            5,               // Task priority (0 to configMAX_PRIORITIES - 1)
+            NULL) == pdPASS) // Task handle
+    {
+        xEventGroupSetBits(s_lora_event_group, LORA_BUSY_BIT);
+    }
+    else
+    {
+        xEventGroupSetBits(s_lora_event_group, LORA_FAIL_BIT);
+        xEventGroupClearBits(s_lora_event_group, LORA_TX_READY_BIT | LORA_RX_READY_BIT | LORA_BUSY_BIT);
+    }
 
     return ESP_OK;
 }
@@ -152,7 +171,6 @@ static esp_err_t get_location_msg(lora_msg_t *msg)
         return ESP_OK;
     }
     return ESP_FAIL;
-
 }
 
 esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
@@ -183,7 +201,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
         sleep_time_ms =
             (now.tv_sec - sleep_enter_time.tv_sec) * 1000L +
             (now.tv_usec - sleep_enter_time.tv_usec) / 1000L;
-
     }
 
     switch (cause)
@@ -191,7 +208,16 @@ app_wake_event_t sm_get_wakeup_cause(void)
     case ESP_SLEEP_WAKEUP_EXT1:
     {
         uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
-        if (wakeup_pin_mask & (1ULL << _adxl_int1_pin))
+        if (wakeup_pin_mask & (1ULL << _usr_button_pin))
+        {
+            ESP_LOGW(TAG,
+                     "Woke: User Button. Sleep time: %ld ms",
+                     sleep_time_ms);
+
+            sm_enable_adxl_wakeups(WAKE_INACTIVITY);
+            app_event = APP_WAKE_USER_BUTTON;
+        }
+        else if (wakeup_pin_mask & (1ULL << _adxl_int1_pin))
         {
             // no error handling
             uint8_t int_src = adxl345_get_and_clear_int_source();
@@ -213,15 +239,6 @@ app_wake_event_t sm_get_wakeup_cause(void)
                 sm_enable_adxl_wakeups(WAKE_INACTIVITY);
                 app_event = APP_WAKE_ADXL_ACTIVITY;
             }
-        }
-        else if (wakeup_pin_mask & (1ULL << _usr_button_pin))
-        {
-            ESP_LOGW(TAG,
-                     "Woke: User Button. Sleep time: %ld ms",
-                     sleep_time_ms);
-
-            sm_enable_adxl_wakeups(WAKE_INACTIVITY);
-            app_event = APP_WAKE_USER_BUTTON;
         }
         else
         {
@@ -334,9 +351,22 @@ esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source)
 
 esp_err_t sm_tx_state_if_due(uint8_t flags)
 {
+
+    int64_t uptime = esp_timer_get_time();
+    ESP_LOGI(TAG, "time since last tx call: %lld", uptime - _last_tx_call);
+    if (uptime - _last_tx_call < LORA_COOLDOWN_S * 1000 * 1000 && _last_tx_call != 0)
+    {
+        return ESP_OK;
+    }
+
     if (s_lora_event_group == NULL)
     {
         s_lora_event_group = xEventGroupCreate();
+    }
+
+    if (xEventGroupGetBits(s_lora_event_group) & LORA_BUSY_BIT)
+    {
+        return ESP_OK;
     }
 
     struct timeval now;
@@ -350,6 +380,8 @@ esp_err_t sm_tx_state_if_due(uint8_t flags)
         xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
         return ESP_OK;
     }
+
+    _last_tx_call = uptime;
 
     lora_msg_t *msg = (lora_msg_t *)malloc(sizeof(lora_msg_t));
 
@@ -401,6 +433,11 @@ esp_err_t sm_wait_tx_done(void)
 lora_status_t sm_get_lora_status(void)
 {
     EventBits_t bits = xEventGroupGetBits(s_lora_event_group);
+
+    if (bits & LORA_BUSY_BIT)
+    {
+        return LORA_BUSY;
+    }
     if (bits & LORA_FAIL_BIT)
     {
         return LORA_FAIL;
