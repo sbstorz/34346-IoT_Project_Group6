@@ -104,8 +104,7 @@ esp_err_t gnss_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io
     // To get prints of the message exchange with the GNSS module
     uGnssSetUbxMessagePrint(gnssHandle, true);
 
-
-    uGnssSetRetries(gnssHandle,5);
+    uGnssSetRetries(gnssHandle, 5);
 
     // int32_t bitmap = uGnssCfgGetProtocolOut(gnssHandle);
     // ESP_LOGI(TAG, "MSG RATE: %ld", bitmap);
@@ -186,6 +185,47 @@ esp_err_t gnss_get_location(int32_t *latitudeX1e7,
     *vAcc = 0;
 
     return ESP_FAIL;
+}
+
+esp_err_t gnss_set_eco_mode(void)
+{
+    const int payload_length = 2;
+    char messageSend[payload_length + U_UBX_PROTOCOL_OVERHEAD_LENGTH_BYTES];
+    int32_t messageSendSize;
+    // uGnssMessageId_t responseMessageId = {
+    //     .type = U_GNSS_PROTOCOL_UBX,
+    //     .id.ubx = ((uint16_t)0x06 << 8) | (uint16_t)0x11};
+    // // char *pMsgReceive = NULL;
+
+    char payload[] = {8, 4};
+
+    messageSendSize = uUbxProtocolEncode(0x06, 0x11, payload, payload_length, messageSend);
+    if (uGnssMsgSend(gnssHandle, messageSend,
+                     messageSendSize) == messageSendSize)
+    {
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+    {
+        // int32_t messageReceiveSize = uGnssMsgReceive(gnssHandle,
+        //                                              &responseMessageId,
+        //                                              &pMsgReceive, 0,
+        //                                              1000, NULL);
+        // if (messageReceiveSize >= 0)
+        // {
+
+        //     // Process the received message here
+        //     int32_t body_size = uUbxProtocolDecode(pMsgReceive, messageReceiveSize, NULL, NULL, pMsgReceive, messageReceiveSize, NULL);
+        //     ESP_LOG_BUFFER_HEXDUMP(TAG, pMsgReceive, body_size, ESP_LOG_INFO);
+        //     *longitudeX1e7 = uUbxProtocolUint32Decode(pMsgReceive + 4);
+        //     *latitudeX1e7 = uUbxProtocolUint32Decode(pMsgReceive + 8);
+        //     *hMSL = uUbxProtocolUint32Decode(pMsgReceive + 16);
+        //     *hAcc = uUbxProtocolUint32Decode(pMsgReceive + 20);
+        //     *vAcc = uUbxProtocolUint32Decode(pMsgReceive + 24);
+
+        //     uPortFree(pMsgReceive);
+        // }
+    }
 }
 
 esp_err_t gnss_sleep(void)

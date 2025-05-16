@@ -70,8 +70,7 @@ void app_main(void)
         return;
     }
 
-    /* TX on GPIO 5 since this is pulled up after reset and during sleep, reset could be removed since MCU and Lora module are always restarted together*/
-    rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_27, 1024, true);
+
 
     ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
     if (!(state_flags & IS_INIT))
@@ -79,8 +78,12 @@ void app_main(void)
         ESP_LOGI(TAG, "Initial Boot");
         state_flags |= IS_INIT;
 
-        rn_sleep();
+        rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_27, 1024, true);
+
+        ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
         gnss_sleep();
+    }else{
+        rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_27, 1024, false);
     }
 
     while (!stop)
@@ -115,7 +118,7 @@ void app_main(void)
                 break;
             case APP_WAKE_TIMER:
                 ESP_LOGI(TAG, "Wakeup processing: Timer.");
-                
+
                 state = idle;
                 break;
             case APP_WAKE_USER_BUTTON:

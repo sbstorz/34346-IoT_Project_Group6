@@ -67,6 +67,8 @@ static void rn_tx_task(void *params)
         {
             xEventGroupSetBits(s_lora_event_group, LORA_FAIL_BIT);
         }
+
+        rn_sleep();
     }
     else
     {
@@ -127,6 +129,8 @@ static esp_err_t get_location_msg(lora_msg_t *msg)
         memset(msg->buffer, 0, msg->tx_length);
         return ESP_FAIL;
     }
+
+    // gnss_set_eco_mode();
 
     /* If HADFIX, there has been a fix, execute faster position acquisition */
     if (state_flags & HAD_FIX)
@@ -353,7 +357,7 @@ esp_err_t sm_tx_state_if_due(uint8_t flags)
 {
 
     int64_t uptime = esp_timer_get_time();
-    ESP_LOGI(TAG, "time since last tx call: %lld", uptime - _last_tx_call);
+    // ESP_LOGI(TAG, "time since last tx call: %lld", uptime - _last_tx_call);
     if (uptime - _last_tx_call < LORA_COOLDOWN_S * 1000 * 1000 && _last_tx_call != 0)
     {
         return ESP_OK;

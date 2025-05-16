@@ -221,13 +221,12 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
     if (reset)
     {
         rn_reset();
+        vTaskDelay(500/portTICK_PERIOD_MS);
     }
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
     memset(rxBuf, 0, RX_BUF_SIZE);
-    // uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
-
-    // uart_flush(UART_PORT);
+    
 
     return 0;
 }
@@ -275,7 +274,7 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set dr");
-    rc = rn_send_raw_cmd("mac set dr 2");
+    rc = rn_send_raw_cmd("mac set dr 3");
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
         return ESP_FAIL;
