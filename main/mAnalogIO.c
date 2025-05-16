@@ -5,6 +5,7 @@
 #define TAG "ADC"
 
 static RTC_DATA_ATTR int i = 0;
+static RTC_DATA_ATTR int j = 0;
 
     /*
     channel_0 = PIN_36, channel_1 = PIN_37, channel_2 = PIN_38, channel_3 = PIN_39
@@ -48,7 +49,8 @@ static float AnalogRead(int channel)
 int ldr_is_dark(void)
 {
     // if (AnalogRead(_ldr_pin) > 0.1)
-    if (AnalogRead(_ldr_pin) > 0.0)
+    // if (AnalogRead(_ldr_pin) > 0.0)
+    if (j++ > 5)
     {
         return 1;
     }

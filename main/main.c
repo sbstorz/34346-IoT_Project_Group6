@@ -20,12 +20,14 @@
 
 #define IS_INIT (1 << 0)
 #define IS_STOLEN (1 << 1)
+#define IN_MOTION (1 << 2)
 #define LED_ON (1 << 3)
 #define LOW_BAT (1 << 4)
 
 #define LED_ON_DSLEEP_DURATION_S 5
 #define LED_OFF_DSLEEP_DURATION_S 10
 #define STOLEN_DSLEEP_DURATION_S 30
+#define MOTION_DSLEEP_DURATION_S 6
 
 typedef enum
 {
@@ -52,7 +54,6 @@ void app_main(void)
     state_t state = wakeup;
     bool wake_lock = 0;
     bool stop = 0;
-    unsigned int dsleep_time_s = state_flags & LED_ON ? LED_ON_DSLEEP_DURATION_S : LED_OFF_DSLEEP_DURATION_S;
 
     led_init(GPIO_NUM_13, state_flags & LED_ON);
     button_init(GPIO_NUM_4);
@@ -109,17 +110,25 @@ void app_main(void)
             case APP_WAKE_ADXL_ACTIVITY:
                 ESP_LOGI(TAG,
                          "Wakeup processing: ADXL Activity detected.");
+                state_flags |= IN_MOTION;
                 state = light_auto;
                 break;
             case APP_WAKE_ADXL_INACTIVITY:
                 ESP_LOGI(TAG,
                          "Wakeup processing: ADXL Inactivity detected.");
+                state_flags &= ~IN_MOTION;
                 state = led_off;
                 break;
             case APP_WAKE_TIMER:
                 ESP_LOGI(TAG, "Wakeup processing: Timer.");
-
-                state = idle;
+                if (state_flags & IN_MOTION)
+                {
+                    state = light_auto;
+                }
+                else
+                {
+                    state = idle;
+                }
                 break;
             case APP_WAKE_USER_BUTTON:
                 ESP_LOGI(TAG, "Wakeup processing: User Button.");
@@ -188,7 +197,6 @@ void app_main(void)
                 ESP_LOGI(TAG, "Turn LED: ON");
                 led_state_on();
                 sm_enable_adxl_wakeups(WAKE_INACTIVITY);
-                dsleep_time_s = LED_ON_DSLEEP_DURATION_S;
                 // DEBOUNCE delay
                 vTaskDelay(100 / portTICK_PERIOD_MS);
             }
@@ -212,7 +220,6 @@ void app_main(void)
                 led_state_off();
             }
             state_flags &= ~LED_ON;
-            dsleep_time_s = LED_OFF_DSLEEP_DURATION_S;
             if (state_flags & IS_STOLEN)
             {
                 state = stolen;
@@ -249,6 +256,7 @@ void app_main(void)
             {
                 if (state_flags & LED_ON)
                 {
+                    state_flags &= ~IN_MOTION;
                     state = led_off;
                 }
             }
@@ -319,7 +327,6 @@ void app_main(void)
             default:
                 break;
             }
-            dsleep_time_s = STOLEN_DSLEEP_DURATION_S;
             state = dsleep;
             break;
 
@@ -336,6 +343,20 @@ void app_main(void)
         {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
+    }
+
+    unsigned int dsleep_time_s  = LED_OFF_DSLEEP_DURATION_S;
+    if (state_flags & IS_STOLEN)
+    {
+        dsleep_time_s = STOLEN_DSLEEP_DURATION_S;
+    }
+    else if (state_flags & LED_ON)
+    {
+        dsleep_time_s = LED_ON_DSLEEP_DURATION_S;
+    }
+    else if (state_flags & IN_MOTION)
+    {
+        dsleep_time_s = MOTION_DSLEEP_DURATION_S;
     }
 
     if (button_get_level())
