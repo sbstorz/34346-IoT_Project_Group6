@@ -70,8 +70,6 @@ void app_main(void)
         return;
     }
 
-
-
     ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
     if (!(state_flags & IS_INIT))
     {
@@ -82,7 +80,9 @@ void app_main(void)
 
         ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
         gnss_sleep();
-    }else{
+    }
+    else
+    {
         rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_27, 1024, false);
     }
 
@@ -177,6 +177,7 @@ void app_main(void)
                 {
                     ESP_LOGI(TAG, "Turn LED: BLINK");
                     led_start_blink();
+                    sm_enable_adxl_wakeups(WAKE_INACTIVITY);
                     // DEBOUNCE delay
                     vTaskDelay(100 / portTICK_PERIOD_MS);
                 }
@@ -186,6 +187,7 @@ void app_main(void)
             {
                 ESP_LOGI(TAG, "Turn LED: ON");
                 led_state_on();
+                sm_enable_adxl_wakeups(WAKE_INACTIVITY);
                 dsleep_time_s = LED_ON_DSLEEP_DURATION_S;
                 // DEBOUNCE delay
                 vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -240,6 +242,14 @@ void app_main(void)
                 else
                 {
                     state = led_on;
+                }
+            }
+
+            if (sm_get_adxl_int_status())
+            {
+                if (state_flags & LED_ON)
+                {
+                    state = led_off;
                 }
             }
 

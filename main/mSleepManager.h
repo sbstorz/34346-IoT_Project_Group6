@@ -62,6 +62,7 @@ esp_err_t sm_deep_sleep(
     uint64_t timer_duration_us);
 
 esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source);
+int sm_get_adxl_int_status(void);
 
 esp_err_t sm_wait_tx_done(void);
 esp_err_t sm_tx_state_if_due(uint8_t flags);

@@ -47,7 +47,8 @@ static float AnalogRead(int channel)
 
 int ldr_is_dark(void)
 {
-    if (AnalogRead(_ldr_pin) > 0.1)
+    // if (AnalogRead(_ldr_pin) > 0.1)
+    if (AnalogRead(_ldr_pin) > 0.0)
     {
         return 1;
     }

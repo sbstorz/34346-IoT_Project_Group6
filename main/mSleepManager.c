@@ -475,3 +475,7 @@ esp_err_t sm_get_rx_data(char *buf, size_t buf_size)
 
     return ESP_OK;
 }
+
+int sm_get_adxl_int_status(void){
+    return gpio_get_level(_adxl_int1_pin);
+}
