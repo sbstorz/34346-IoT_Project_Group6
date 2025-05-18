@@ -56,7 +56,7 @@ void app_main(void)
     bool stop = 0;
 
     led_init(GPIO_NUM_13, state_flags & LED_ON);
-    button_init(GPIO_NUM_4);
+    button_init(GPIO_NUM_12);
     adc_init(0, 3);
 
     if (sm_init_adxl(GPIO_NUM_19, GPIO_NUM_18) != ESP_OK)
@@ -375,6 +375,6 @@ void app_main(void)
     }
     else
     {
-        sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_4, dsleep_time_s * 1000 * 1000);
+        sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_12, dsleep_time_s * 1000 * 1000);
     }
 }
