@@ -14,10 +14,21 @@ typedef enum
     CRLF = 1,
 } delimiter_t;
 
+/**
+ * @brief initialize a UART driver with 8N1 protocol.
+  *
+ * @param uart_num UART Port numberto initialize.
+ * @param tx_io_num TX pin tp use.
+ * @param rx_io_num RX pin tp use.
+ * @param baudrate the baudrate to use.
+ * @param rx_buffer_size the hardware RX buffer size. Should be large enough to
+ * hold multiple messages without overflow
+ */
 void uart_init_driver(uart_port_t uart_num, int tx_io_num, int rx_io_num, int baudrate, int rx_buffer_size);
 
 /**
- * @brief  read UART buffer up to a delimiter to application
+ * @brief read UART buffer up to a delimiter to application. This reads data from the UART RX buffer
+ * bytewise and checks if the specified delimiter has been reached.
  *
  * @param uart_num UART Port number
  * @param delimiter Currenlty only `CRLF` supported

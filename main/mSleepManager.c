@@ -1,6 +1,6 @@
 #include "mSleepManager.h"
 
-#include <sys/time.h> // For gettimeofday
+#include <sys/time.h> 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -22,8 +22,9 @@
 #define RX_BUF_SIZE 10
 #define HAD_FIX (1 << 2)
 #define LORA_COOLDOWN_S 20
+#define ADXL_COOLDOWN_S 10
 
-static const char *TAG = "SM"; // Tag for logging
+static const char *TAG = "SM";
 
 static EventGroupHandle_t s_lora_event_group = NULL;
 static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -31,8 +32,8 @@ static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
 /* this is private to this file (static) */
 typedef struct
 {
-    char buffer[TX_BUF_SIZE]; /*!< pointer to heap where message is stored*/
-    size_t tx_length;         /*!< length of msg*/
+    char buffer[TX_BUF_SIZE]; /*!< pointer to heap where message is stored */
+    size_t tx_length;         /*!< length of msg */
 } lora_msg_t;
 
 static char _rx_data[RX_BUF_SIZE];
@@ -130,8 +131,6 @@ static esp_err_t get_location_msg(lora_msg_t *msg)
         return ESP_FAIL;
     }
 
-    // gnss_set_eco_mode();
-
     /* If HADFIX, there has been a fix, execute faster position acquisition */
     if (state_flags & HAD_FIX)
     {
@@ -182,9 +181,9 @@ esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
     adxl_device_config_t adxl_config = {
         .activity_int_pin = ADXL345_INT1_PIN,
         .inactivity_int_pin = ADXL345_INT1_PIN,
-        .activity_threshold = 40,
-        .inactivity_threshold = 40,
-        .inactivity_time_s = 30,
+        .activity_threshold = 20,
+        .inactivity_threshold = 20,
+        .inactivity_time_s = ADXL_COOLDOWN_S,
         .sda_pin = sda,
         .scl_pin = scl,
     };
@@ -320,7 +319,7 @@ esp_err_t sm_deep_sleep(
                   "User button on GPIO %d. And timer in %lld s",
              motion_int_pin, user_button_pin, timer_duration_us / 1000000);
 
-    gettimeofday(&sleep_enter_time, NULL); // Record time before sleep
+    gettimeofday(&sleep_enter_time, NULL);
     esp_deep_sleep_start();
 }
 
@@ -329,7 +328,8 @@ esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source)
     esp_err_t rc = ESP_FAIL;
     if (source & BIT(0))
     {
-        rc = adxl345_enable_activity_int();
+        rc = adxl345_disable_activity_int();
+        rc |= adxl345_enable_activity_int();
     }
     else
     {
@@ -343,7 +343,8 @@ esp_err_t sm_enable_adxl_wakeups(adxl_wake_source_t source)
     source = source >> 1;
     if (source & BIT(0))
     {
-        rc = adxl345_enable_inactivity_int();
+        rc = adxl345_disable_inactivity_int();
+        rc |= adxl345_enable_inactivity_int();
     }
     else
     {
@@ -357,7 +358,6 @@ esp_err_t sm_tx_state_if_due(uint8_t flags)
 {
 
     int64_t uptime = esp_timer_get_time();
-    // ESP_LOGI(TAG, "time since last tx call: %lld", uptime - _last_tx_call);
     if (uptime - _last_tx_call < LORA_COOLDOWN_S * 1000 * 1000 && _last_tx_call != 0)
     {
         return ESP_OK;
@@ -398,7 +398,7 @@ esp_err_t sm_tx_state_if_due(uint8_t flags)
     return ESP_OK;
 }
 
-esp_err_t sm_tx_location(void)
+esp_err_t sm_tx_location(uint8_t flags)
 {
     if (s_lora_event_group == NULL)
     {
@@ -411,7 +411,7 @@ esp_err_t sm_tx_location(void)
     get_location_msg(msg);
 
     ESP_LOGI(TAG, "Sending TX: Location + Battery");
-    msg->buffer[TX_BUF_SIZE - 1] = 0x00 /*battery_get_state()*/;
+    msg->buffer[TX_BUF_SIZE-1] = flags;
 
     tx(msg);
 
@@ -476,6 +476,19 @@ esp_err_t sm_get_rx_data(char *buf, size_t buf_size)
     return ESP_OK;
 }
 
-int sm_get_adxl_int_status(void){
-    return gpio_get_level(_adxl_int1_pin);
+int sm_get_adxl_int_status(adxl_wake_source_t source)
+{
+    if (gpio_get_level(_adxl_int1_pin))
+    {
+        uint8_t int_src = adxl345_get_and_clear_int_source();
+        if (int_src & ADXL345_INT_SOURCE_INACTIVITY && source == WAKE_INACTIVITY)
+        {
+            return 1;
+        }
+        if (int_src & ADXL345_INT_SOURCE_ACTIVITY && source == WAKE_ACTIVITY)
+        {
+            return 1;
+        }
+    }
+    return 0;
 }

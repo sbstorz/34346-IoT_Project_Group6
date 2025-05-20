@@ -2,6 +2,26 @@
 
 #define TAG "RN2483"
 
+typedef enum
+{
+    busy,
+    frame_counter_err_rejoin_needed,
+    invalid_data_len,
+    invalid_param,
+    mac_err,
+    mac_paused,
+    mac_rx,
+    mac_tx_ok,
+    no_free_ch,
+    not_joined,
+    ok,
+    radio_err,
+    radio_tx_ok,
+    silent,
+    EMPTY,
+    UNKNOWN
+} received_t;
+
 static gpio_num_t RST_PIN;
 static gpio_num_t RX_PIN;
 static gpio_num_t TX_PIN;
@@ -42,7 +62,7 @@ static void base16decode(char *dst, const char *src, size_t src_size)
     for (size_t i = 0; i < len; i += 2)
     {
         // Convert two hex characters to a byte
-        char hex_byte[3] = {src[i], src[i + 1], '\0'}; // Null-terminate the string
+        char hex_byte[3] = {src[i], src[i + 1], '\0'}; // Null-terminate the substring
         dst[i / 2] = (char)strtoul(hex_byte, NULL, 16);
     }
 
@@ -124,6 +144,27 @@ static received_t parse_response(const char *rsp)
     }
 }
 
+char *rn_send_raw_cmd(const char *cmd)
+{
+    const char del[] = {'\r', '\n'};
+    uart_flush(UART_PORT);
+    int n = uart_write_bytes(UART_PORT, cmd, strlen(cmd));
+    n += uart_write_bytes(UART_PORT, del, 2);
+
+    if (n != strlen(cmd) + 2)
+    {
+        return NULL;
+    }
+    n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
+    if (n <= 0)
+    {
+        return NULL;
+    }
+
+    rxBuf[n] = 0;
+    return rxBuf;
+}
+
 /**
  * @brief sends a mac tx command with data and returns the immediate response
  *
@@ -180,15 +221,9 @@ static esp_err_t send_tx_cmd(char *tx_data, size_t tx_data_size, unsigned int tx
 
 void rn_reset(void)
 {
-    // gpio_reset_pin(RST_PIN);
-    // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
-    // gpio_pullup_en(RST_PIN);
-
     gpio_set_level(RST_PIN, 0);
     vTaskDelay(10 / portTICK_PERIOD_MS);
     gpio_set_level(RST_PIN, 1);
-
-    // gpio_reset_pin(RST_PIN);
 }
 
 int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gpio_num_t rst_io_num, int rx_buffer_size, bool reset)
@@ -199,21 +234,15 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
     UART_PORT = uart_num;
     RX_BUF_SIZE = rx_buffer_size;
 
-    // gpio_reset_pin(RST_PIN);
     /* Set the GPIO as a push/pull output */
     gpio_config_t cfg = {
         .pin_bit_mask = BIT64(RST_PIN),
         .mode = GPIO_MODE_OUTPUT_OD,
-        // for powersave reasons, the GPIO should not be floating, select pullup
         .pull_up_en = false,
         .pull_down_en = false,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
-
-    // gpio_set_direction(RST_PIN, GPIO_MODE_OUTPUT);
-    // gpio_pullup_en(RST_PIN);
-    // gpio_set_level(RST_PIN, 1);
 
     uart_init_driver(UART_PORT, TX_PIN, RX_PIN, BAUDRATE, RX_BUF_SIZE);
     uart_flush(UART_PORT);
@@ -226,14 +255,13 @@ int rn_init(uart_port_t uart_num, gpio_num_t tx_io_num, gpio_num_t rx_io_num, gp
 
     rxBuf = (char *)malloc(RX_BUF_SIZE * sizeof(char));
     memset(rxBuf, 0, RX_BUF_SIZE);
-    
 
     return 0;
 }
 
 esp_err_t rn_init_otaa(void)
 {
-    int retry_cnt = 3;
+    const int retry_cnt = 3;
 
     ESP_LOGI(TAG, "mac reset");
     char *rc = rn_send_raw_cmd("mac reset 868");
@@ -243,7 +271,6 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set deveui");
-    // 0004A30B010D3F45
     rc = rn_send_raw_cmd("mac set deveui " CONFIG_LORAWAN_DEVEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
@@ -251,7 +278,6 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set appeui");
-    // BE7A000000001465
     rc = rn_send_raw_cmd("mac set appeui " CONFIG_LORAWAN_APPEUI);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
@@ -259,7 +285,6 @@ esp_err_t rn_init_otaa(void)
     }
 
     ESP_LOGI(TAG, "mac set appkey");
-    // A5FFC8F7C29D6EE92CC1141775C46162
     rc = rn_send_raw_cmd("mac set appkey " CONFIG_LORAWAN_APPKEY);
     if (rc == NULL || strcmp(rc, "ok") != 0)
     {
@@ -318,54 +343,7 @@ esp_err_t rn_init_otaa(void)
         }
     }
 
-    // do
-    // {
-    //     i++;
-    //     ESP_LOGI(TAG, "mac join");
-    //     rc = rn_send_raw_cmd("mac join otaa");
-    //     if (rc == NULL || strcmp(rc, "ok") != 0)
-    //     {
-    //         return ESP_FAIL;
-    //     }
-
-    //     int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 20000);
-    //     if (n <= 0)
-    //     {
-    //         return ESP_FAIL;
-    //     }
-
-    //     rxBuf[n] = 0;
-
-    // } while (strcmp(rxBuf, "accepted") != 0 && i < retry_cnt);
-
-    // if (i >= retry_cnt)
-    // {
-    //     return ESP_FAIL;
-    // }
-
     return ESP_OK;
-}
-
-// TODO: should be static and is not thread safe!
-char *rn_send_raw_cmd(const char *cmd)
-{
-    const char del[] = {'\r', '\n'};
-    uart_flush(UART_PORT);
-    int n = uart_write_bytes(UART_PORT, cmd, strlen(cmd));
-    n += uart_write_bytes(UART_PORT, del, 2);
-
-    if (n != strlen(cmd) + 2)
-    {
-        return NULL;
-    }
-    n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
-    if (n <= 0)
-    {
-        return NULL;
-    }
-
-    rxBuf[n] = 0;
-    return rxBuf;
 }
 
 esp_err_t rn_set_autobaud(void)
@@ -377,20 +355,6 @@ esp_err_t rn_set_autobaud(void)
     uart_write_bytes(UART_PORT, autobaud_string, 1);
 
     /* Check if back alive*/
-    // uart_flush(UART_PORT);
-
-    // int n = uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 500);
-    // if (n <= 0)
-    // {
-    //     return ESP_FAIL;
-    // }
-
-    // rxBuf[n] = 0;
-    // if (strcmp(rxBuf, "ok") != 0)
-    // {
-    //     return ESP_FAIL;
-    // }
-
     char *rc = rn_send_raw_cmd("sys get ver");
     if (rc == NULL || strncmp(rc, "RN2483", 6) != 0)
     {
@@ -465,7 +429,6 @@ esp_err_t rn_tx(char *tx_data, size_t tx_data_size, unsigned int tx_port, bool e
         default:
             rn_reset();
             uart_read_data_to_delimiter(UART_PORT, CRLF, rxBuf, RX_BUF_SIZE, 1000);
-            // return ESP_FAIL;
             break;
         }
         i++;
@@ -506,7 +469,7 @@ esp_err_t rn_tx(char *tx_data, size_t tx_data_size, unsigned int tx_port, bool e
         {
             ESP_LOGE(TAG, "Port number out of range: %d", *rx_port);
             free(buf);
-            return 1;
+            return ESP_FAIL;
         }
 
         base16decode(rx_data, buf, 0);

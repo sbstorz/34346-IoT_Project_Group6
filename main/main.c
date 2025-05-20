@@ -4,7 +4,6 @@
 
 #include "mSleepManager.h"
 #include "driver/gpio.h"
-// #include "driver/i2c.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
@@ -43,10 +42,6 @@ typedef enum
 
 /* RTC Vars for main application logic */
 static RTC_DATA_ATTR uint8_t state_flags = 0;
-
-/* Configuration data that is rarely accessed should be stored in NVS*/
-// dont know yet, but could be user (at runtime) configured WIFI credentials
-// (FOR EXAMPLE)
 
 void app_main(void)
 {
@@ -121,7 +116,7 @@ void app_main(void)
                 break;
             case APP_WAKE_TIMER:
                 ESP_LOGI(TAG, "Wakeup processing: Timer.");
-                if (state_flags & IN_MOTION)
+                if (state_flags & IN_MOTION && !(state_flags & LED_ON))
                 {
                     state = light_auto;
                 }
@@ -252,7 +247,7 @@ void app_main(void)
                 }
             }
 
-            if (sm_get_adxl_int_status())
+            if (sm_get_adxl_int_status(WAKE_INACTIVITY))
             {
                 if (state_flags & LED_ON)
                 {
@@ -302,12 +297,11 @@ void app_main(void)
             default:
                 break;
             }
-            // ESP_LOGI(TAG, "idle, next state: %d", state);
             break;
 
         case stolen:
 
-            sm_tx_location();
+            sm_tx_location(state_flags & LOW_BAT ? 0x01 : 0x00);
             sm_wait_tx_done();
             switch (sm_get_lora_status())
             {
@@ -345,7 +339,7 @@ void app_main(void)
         }
     }
 
-    unsigned int dsleep_time_s  = LED_OFF_DSLEEP_DURATION_S;
+    unsigned int dsleep_time_s = LED_OFF_DSLEEP_DURATION_S;
     if (state_flags & IS_STOLEN)
     {
         dsleep_time_s = STOLEN_DSLEEP_DURATION_S;

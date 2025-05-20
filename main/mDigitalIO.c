@@ -11,8 +11,6 @@
 static gpio_num_t _led_pin = GPIO_NUM_NC;
 static gpio_num_t _button_pin = GPIO_NUM_NC;
 
-static int _last_button_state = 1;
-
 static esp_timer_handle_t periodic_timer;
 static EventGroupHandle_t s_button_event_group = NULL;
 
@@ -33,12 +31,10 @@ esp_err_t led_init(gpio_num_t pin, const int32_t level)
 {
     _led_pin = pin;
 
-    // gpio_reset_pin(RST_PIN);
     /* Set the GPIO as a push/pull output */
     gpio_config_t cfg = {
         .pin_bit_mask = BIT64(_led_pin),
         .mode = GPIO_MODE_OUTPUT,
-        // for powersave reasons, the GPIO should not be floating, select pullup
         .pull_up_en = true,
         .pull_down_en = false,
         .intr_type = GPIO_INTR_DISABLE,
@@ -118,7 +114,7 @@ esp_err_t led_stop_blink(void)
     return led_state_off();
 }
 
-static void IRAM_ATTR gpio_isr_handler(void *arg)
+static void IRAM_ATTR button_isr_handler(void *arg)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (gpio_get_level(_button_pin))
@@ -145,19 +141,16 @@ esp_err_t button_init(gpio_num_t pin)
     gpio_config_t cfg = {
         .pin_bit_mask = BIT64(_button_pin),
         .mode = GPIO_MODE_INPUT,
-        // for powersave reasons, the GPIO should not be floating, select pullup
         .pull_up_en = false,
         .pull_down_en = true,
-        .intr_type = GPIO_INTR_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
     };
     gpio_config(&cfg);
-
-    gpio_set_intr_type(_button_pin, GPIO_INTR_ANYEDGE);
 
     // install gpio isr service
     gpio_install_isr_service(0);
     // hook isr handler for specific gpio pin
-    gpio_isr_handler_add(_button_pin, gpio_isr_handler, NULL);
+    gpio_isr_handler_add(_button_pin, button_isr_handler, NULL);
 
     return ESP_OK;
 }
@@ -175,26 +168,10 @@ esp_err_t button_wait_fEdge(void)
 }
 
 int button_had_rEdge(void){
-    if((xEventGroupClearBits(s_button_event_group, REDGE_BIT) & REDGE_BIT)/* || gpio_get_level(_button_pin)*/){
+    if((xEventGroupClearBits(s_button_event_group, REDGE_BIT) & REDGE_BIT)){
         return 1;
     }
     return 0;
-}
-
-int button_get_state(void)
-{
-    if (_button_pin == GPIO_NUM_NC)
-    {
-        return ESP_ERR_INVALID_STATE;
-    }
-    int r = 0;
-    int state = gpio_get_level(_button_pin);
-    if (!_last_button_state && state)
-    {
-        r = 1;
-    }
-    _last_button_state = state;
-    return r;
 }
 
 int button_get_level(void){
