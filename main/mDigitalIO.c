@@ -120,10 +120,12 @@ static void IRAM_ATTR button_isr_handler(void *arg)
     if (gpio_get_level(_button_pin))
     {
         xEventGroupSetBitsFromISR(s_button_event_group, REDGE_BIT, &xHigherPriorityTaskWoken);
+        xEventGroupClearBitsFromISR(s_button_event_group, FEDGE_BIT);
     }
     else
     {
         xEventGroupSetBitsFromISR(s_button_event_group, FEDGE_BIT, &xHigherPriorityTaskWoken);
+        xEventGroupClearBitsFromISR(s_button_event_group, REDGE_BIT);
     }
 }
 

@@ -15,7 +15,6 @@
 #include "mAnalogIO.h"
 
 #define TAG "Main"
-#define TX_BUF_SIZE 3 * 4 + 1
 
 #define IS_INIT (1 << 0)
 #define IS_STOLEN (1 << 1)
@@ -57,13 +56,13 @@ void app_main(void)
     if (sm_init_adxl(GPIO_NUM_19, GPIO_NUM_18) != ESP_OK)
     {
         ESP_LOGE(TAG, "FAILED to initialize the accelerometer");
-        return;
+        goto error;
     }
 
     if (gnss_init(UART_NUM_1, GPIO_NUM_22, GPIO_NUM_23, GPIO_NUM_21) != ESP_OK)
     {
         ESP_LOGE(TAG, "FAILED to initialize the GNSS Module");
-        return;
+        goto error;
     }
 
     ESP_LOGI(TAG, "Woken up, flags are: %#.2x", state_flags);
@@ -75,7 +74,7 @@ void app_main(void)
         rn_init(UART_NUM_2, GPIO_NUM_5, GPIO_NUM_16, GPIO_NUM_27, 1024, true);
 
         ESP_ERROR_CHECK_WITHOUT_ABORT(rn_sleep());
-        gnss_sleep();
+        // gnss_sleep();
     }
     else
     {
@@ -207,12 +206,16 @@ void app_main(void)
             {
                 ESP_LOGI(TAG, "LED STOP BLINK");
                 led_stop_blink();
+                // DEBOUNCE delay
+                vTaskDelay(100 / portTICK_PERIOD_MS);
                 wake_lock = 0;
             }
             else
             {
                 ESP_LOGI(TAG, "LED OFF");
                 led_state_off();
+                // DEBOUNCE delay
+                vTaskDelay(100 / portTICK_PERIOD_MS);
             }
             state_flags &= ~LED_ON;
             if (state_flags & IS_STOLEN)
@@ -371,4 +374,9 @@ void app_main(void)
     {
         sm_deep_sleep(GPIO_NUM_15, GPIO_NUM_12, dsleep_time_s * 1000 * 1000);
     }
+
+error:
+    // If we get to this point something went fatally wrong and a restart is the last option
+    vTaskDelay(1000/portTICK_PERIOD_MS);
+    esp_restart();
 }

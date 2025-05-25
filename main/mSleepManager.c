@@ -1,6 +1,6 @@
 #include "mSleepManager.h"
 
-#include <sys/time.h> 
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -91,6 +91,8 @@ static void rn_tx_task(void *params)
         xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
     }
 
+    ESP_LOGI(TAG, "Freeing lora msg structure:");
+    ESP_LOG_BUFFER_HEXDUMP(TAG, msg, sizeof(lora_msg_t), ESP_LOG_INFO);
     free(msg);
 
     xEventGroupClearBits(s_lora_event_group, LORA_BUSY_BIT);
@@ -388,10 +390,21 @@ esp_err_t sm_tx_state_if_due(uint8_t flags)
     _last_tx_call = uptime;
 
     lora_msg_t *msg = (lora_msg_t *)malloc(sizeof(lora_msg_t));
+    if (msg == NULL)
+    {
+        // Handle memory allocation failure
+        ESP_LOGE(TAG, "failed to allocate message for lora transmission");
+        xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+        return ESP_FAIL;
+        // Take appropriate action, such as exiting the function or the program
+    }
 
     ESP_LOGI(TAG, "Sending TX: Battery only");
     msg->buffer[0] = flags;
     msg->tx_length = 1;
+
+    ESP_LOGI(TAG, "allocated lora msg structure:");
+    ESP_LOG_BUFFER_HEXDUMP(TAG, msg, sizeof(lora_msg_t), ESP_LOG_INFO);
 
     tx(msg);
 
@@ -405,13 +418,27 @@ esp_err_t sm_tx_location(uint8_t flags)
         s_lora_event_group = xEventGroupCreate();
     }
 
+    if (xEventGroupGetBits(s_lora_event_group) & LORA_BUSY_BIT)
+    {
+        xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+        return ESP_OK;
+    }
+
     lora_msg_t *msg = (lora_msg_t *)malloc(sizeof(lora_msg_t));
+    if (msg == NULL)
+    {
+        // Handle memory allocation failure
+        ESP_LOGE(TAG, "failed to allocate message for lora transmission");
+        xEventGroupSetBits(s_lora_event_group, LORA_TX_READY_BIT);
+        return ESP_FAIL;
+        // Take appropriate action, such as exiting the function or the program
+    }
     msg->tx_length = TX_BUF_SIZE;
 
     get_location_msg(msg);
 
     ESP_LOGI(TAG, "Sending TX: Location + Battery");
-    msg->buffer[TX_BUF_SIZE-1] = flags;
+    msg->buffer[TX_BUF_SIZE - 1] = flags;
 
     tx(msg);
 
