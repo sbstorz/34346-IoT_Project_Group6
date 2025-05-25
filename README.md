@@ -1,35 +1,31 @@
 # 34346-IoT_Project_Group6
 This repository contains the source code to build a smart bike light with geolocation for the DTU Course 34346.
 
-<div style="display: flex; flex-wrap: wrap;">
-
-  <div style="width: 50%;">
-    <img src="assets/enclosure_closed.jpg" alt="Front" style="width: 100%;">
-    <center/>
-    <p>(a) Front</p>
-  </div>
-
-  <div style="width: 50%;">
-    <img src="assets/enclosure_back.jpg" alt="Back" style="width: 100%;">
-    <center/>
-    <p>(b) Back</p>
-  </div>
-
-  <div style="width: 50%;">
-    <img src="assets/enclosure_open.jpg" alt="Open" style="width: 100%;">
-    <center/>
-    <p>(c) Open</p>
-  </div>
-
-  <div style="width: 50%;">
-    <img src="assets/naked_top.jpg" alt="Stack" style="width: 100%;">
-    <center/>
-    <p>(d) Stack</p>
-  </div>
-
-</div>
+<table style="border-collapse: collapse; width: 100%;">
+  <tr>
+    <td>
+      <img src="assets/enclosure_closed.jpg" alt="Front" width="100%">
+      <p>(a) Front</p>
+    </td>
+    <td>
+      <img src="assets/enclosure_back.jpg" alt="Back" width="100%">
+      <p>(b) Back</p>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="assets/enclosure_open.jpg" alt="Open" width="100%">
+      <p>(c) Open</p>
+    </td>
+    <td>
+      <img src="assets/naked_top.jpg" alt="Stack" width="100%">
+      <p>(d) Stack</p>
+    </td>
+  </tr>
+</table>
 
 **Figure:** Prototype outside and inside
+
 
 ## Repository Structure
 This application is build using the ESP-IDF v5.4.0. The directory structure is the following:
