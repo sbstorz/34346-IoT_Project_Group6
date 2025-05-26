@@ -210,6 +210,34 @@ esp_err_t adxl345_set_measure_mode()
     return ESP_OK;
 }
 
+esp_err_t adxl345_set_stdby_mode(void)
+{
+    if (adxl345_dev_handle == NULL)
+    {
+        ESP_LOGE(TAG,
+                 "ADXL345 device handle not initialized for set_stdby_mode");
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t dev_id;
+    esp_err_t ret;
+
+
+    // Set ADXL345 to stdby mode
+    // Bit D3 High (0x08) in POWER_CTL register (0x2D) enables measurement
+    ret = adxl345_write_reg(ADXL345_REG_POWER_CTL, 0x00);
+    if (ret == ESP_OK)
+    {
+        ESP_LOGI(TAG, "ADXL345 set to standby mode");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to set ADXL345 to standby mode (err=0x%x)", ret);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 // Refactored function
 esp_err_t adxl345_enable_activity_int(void)
 {
@@ -250,8 +278,8 @@ esp_err_t adxl345_enable_activity_int(void)
 
     // 4. Configure Activity Control (DC-coupled, XYZ enabled)
     uint8_t act_ctl_bits_to_set =
-        ADXL345_ACT_X_EN | ADXL345_ACT_Y_EN | ADXL345_ACT_Z_EN;
-    uint8_t act_ctl_bits_to_clear = ADXL345_ACT_ACDC; // Ensure DC coupling
+        ADXL345_ACT_X_EN | ADXL345_ACT_Y_EN | ADXL345_ACT_Z_EN | ADXL345_ACT_ACDC;
+    uint8_t act_ctl_bits_to_clear = 0;
     ret = adxl345_update_reg_bits(ADXL345_REG_ACT_INACT_CTL,
                                   act_ctl_bits_to_set, act_ctl_bits_to_clear);
     if (ret != ESP_OK)
@@ -262,7 +290,7 @@ esp_err_t adxl345_enable_activity_int(void)
         return ret;
     }
     ESP_LOGI(TAG,
-             "Activity control set in ACT_INACT_CTL (DC-coupled, XYZ enabled)");
+             "Activity control set in ACT_INACT_CTL (AC-coupled, XYZ enabled)");
 
     // 3. Enable Activity Interrupt
     ret = adxl345_update_reg_bits(ADXL345_REG_INT_ENABLE,
@@ -327,8 +355,8 @@ esp_err_t adxl345_enable_inactivity_int(void)
 
     // 5. Configure Inactivity Control (DC-coupled, XYZ enabled)
     uint8_t inact_ctl_bits_to_set =
-        ADXL345_INACT_X_EN | ADXL345_INACT_Y_EN | ADXL345_INACT_Z_EN;
-    uint8_t inact_ctl_bits_to_clear = ADXL345_INACT_ACDC; // Ensure DC coupling
+        ADXL345_INACT_X_EN | ADXL345_INACT_Y_EN | ADXL345_INACT_Z_EN | ADXL345_INACT_ACDC;
+    uint8_t inact_ctl_bits_to_clear = 0;
     ret = adxl345_update_reg_bits(ADXL345_REG_ACT_INACT_CTL,
                                   inact_ctl_bits_to_set,
                                   inact_ctl_bits_to_clear);

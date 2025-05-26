@@ -183,8 +183,8 @@ esp_err_t sm_init_adxl(gpio_num_t sda, gpio_num_t scl)
     adxl_device_config_t adxl_config = {
         .activity_int_pin = ADXL345_INT1_PIN,
         .inactivity_int_pin = ADXL345_INT1_PIN,
-        .activity_threshold = 20,
-        .inactivity_threshold = 20,
+        .activity_threshold = 2,
+        .inactivity_threshold = 2,
         .inactivity_time_s = ADXL_COOLDOWN_S,
         .sda_pin = sda,
         .scl_pin = scl,

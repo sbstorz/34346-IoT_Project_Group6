@@ -184,6 +184,11 @@ esp_err_t adxl345_i2c_master_init(gpio_num_t sda, gpio_num_t scl);
 esp_err_t adxl345_set_measure_mode(void);
 
 /**
+ * @brief Set the ADXL345 into standby mode.
+ */
+esp_err_t adxl345_set_stdby_mode(void);
+
+/**
  * @brief Configure the ADXL345 activity detection interrupt.
  * Enables activity detection on all axes (DC-coupled), sets the threshold,
  * enables the activity interrupt, and maps it to the specified pin.
