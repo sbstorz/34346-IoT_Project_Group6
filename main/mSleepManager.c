@@ -21,7 +21,7 @@
 #define TX_BUF_SIZE 3 * 4 + 1
 #define RX_BUF_SIZE 10
 #define HAD_FIX (1 << 2)
-#define LORA_COOLDOWN_S 20
+#define LORA_COOLDOWN_S 60
 #define ADXL_COOLDOWN_S 10
 
 static const char *TAG = "SM";
